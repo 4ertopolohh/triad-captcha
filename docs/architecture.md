@@ -16,7 +16,8 @@ API dependency. Reputation and audit history are local to one installation.
 4. Redis stores rate windows, distinct-count sets, temporary blocks, challenge
    issuance records, and one-time consumption state. Redis is mandatory.
 5. `@triadcaptcha/react` sends the protected request. On a stable
-   `ANTIBOT_CHALLENGE_REQUIRED` response it obtains a same-origin challenge,
+   `ANTIBOT_CHALLENGE_REQUIRED` response it obtains a same-origin challenge (or
+   one from an explicitly configured exact trusted API origin),
    solves it in a Web Worker, and retries the request exactly once.
 
 ## Request flow
@@ -99,6 +100,9 @@ continues to provide only the perimeter ceiling.
 ## Trust boundaries
 
 - CSRF and authentication remain Django responsibilities.
+- The browser SDK is same-origin by default. A split frontend/API deployment must
+  enumerate exact trusted HTTP(S) origins, use credentialed CORS for only those
+  origins, and keep redirect following disabled.
 - Forwarded addresses are considered only when the immediate peer belongs to a
   configured trusted proxy network; the chain is walked from the trusted edge.
 - Passwords, verification codes, raw email/phone values, secrets, and submitted

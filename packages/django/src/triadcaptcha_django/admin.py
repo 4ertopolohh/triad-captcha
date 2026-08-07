@@ -10,7 +10,10 @@ from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.utils.translation import gettext_lazy as _
 from django.views.decorators.debug import sensitive_post_parameters
+from redis.exceptions import RedisError
 
+from . import __version__
+from .conf import get_settings, secret_is_acceptable
 from .models import (
     BlockRule,
     ProtectedAction,
@@ -18,8 +21,33 @@ from .models import (
     SecurityEvent,
     SiteKeyVersion,
 )
-from .redis_backend import RedisUnavailable, clear_temporary_block, set_temporary_block
+from .redis_backend import (
+    RedisUnavailable,
+    clear_temporary_block,
+    get_redis_client,
+    set_temporary_block,
+)
 from .signals import _hmac_hex, hash_identity, hash_pair
+from .site_keys import current_site_key
+
+
+class SuperuserManagedAdmin(admin.ModelAdmin):
+    """Keep security-policy mutations behind the strongest built-in role."""
+
+    def has_module_permission(self, request) -> bool:
+        return bool(request.user and request.user.is_superuser)
+
+    def has_view_permission(self, request, obj=None) -> bool:
+        return bool(request.user and request.user.is_superuser)
+
+    def has_add_permission(self, request) -> bool:
+        return bool(request.user and request.user.is_superuser)
+
+    def has_change_permission(self, request, obj=None) -> bool:
+        return bool(request.user and request.user.is_superuser)
+
+    def has_delete_permission(self, request, obj=None) -> bool:
+        return bool(request.user and request.user.is_superuser)
 
 
 class ProtectionConfigurationForm(forms.ModelForm):
@@ -41,9 +69,47 @@ class ProtectionConfigurationForm(forms.ModelForm):
 
 
 @admin.register(ProtectionConfiguration)
-class ProtectionConfigurationAdmin(admin.ModelAdmin):
+class ProtectionConfigurationAdmin(SuperuserManagedAdmin):
     form = ProtectionConfigurationForm
     list_display = ("enabled", "development_mode", "audit_retention_days", "updated_at")
+    readonly_fields = (
+        "package_version",
+        "redis_status",
+        "challenge_secret_status",
+        "identifier_secret_status",
+        "active_site_key_status",
+        "trusted_proxy_status",
+        "created_at",
+        "updated_at",
+    )
+    fieldsets = (
+        (
+            "Состояние интеграции",
+            {
+                "fields": (
+                    "package_version",
+                    "redis_status",
+                    "challenge_secret_status",
+                    "identifier_secret_status",
+                    "active_site_key_status",
+                    "trusted_proxy_status",
+                ),
+                "description": "Секреты никогда не отображаются и не сохраняются в базе данных.",
+            },
+        ),
+        (
+            "Основная защита",
+            {
+                "fields": ("enabled", "development_mode"),
+                "description": "Development mode допустим только при DEBUG=True.",
+            },
+        ),
+        (
+            "Аудит и хранение",
+            {"fields": ("audit_retention_days", "allow_audit_sample_rate")},
+        ),
+        ("Служебные поля", {"fields": ("created_at", "updated_at")}),
+    )
 
     def has_add_permission(self, request) -> bool:
         return super().has_add_permission(request) and not ProtectionConfiguration.objects.exists()
@@ -51,9 +117,39 @@ class ProtectionConfigurationAdmin(admin.ModelAdmin):
     def has_delete_permission(self, request, obj=None) -> bool:
         return False
 
+    @admin.display(description="Версия пакета")
+    def package_version(self, _obj) -> str:
+        return __version__
+
+    @admin.display(description="Redis")
+    def redis_status(self, _obj) -> str:
+        try:
+            return "Доступен" if get_redis_client().ping() else "Не отвечает"
+        except (RedisError, OSError, ValueError):
+            return "Недоступен"
+
+    @admin.display(description="HMAC challenge secret")
+    def challenge_secret_status(self, _obj) -> str:
+        return "Настроен" if secret_is_acceptable(get_settings().hmac_secret) else "Не настроен"
+
+    @admin.display(description="HMAC identifier secret")
+    def identifier_secret_status(self, _obj) -> str:
+        configured = secret_is_acceptable(get_settings().identifier_hmac_secret)
+        return "Настроен" if configured else "Не настроен"
+
+    @admin.display(description="Активный публичный site key")
+    def active_site_key_status(self, _obj) -> str:
+        key = current_site_key()
+        return f"{key[:18]}…" if key else "Не настроен"
+
+    @admin.display(description="Доверенные proxy-сети")
+    def trusted_proxy_status(self, _obj) -> str:
+        networks = get_settings().trusted_proxy_networks
+        return ", ".join(networks) if networks else "Не настроены"
+
 
 @admin.register(ProtectedAction)
-class ProtectedActionAdmin(admin.ModelAdmin):
+class ProtectedActionAdmin(SuperuserManagedAdmin):
     list_display = (
         "action",
         "enabled",
@@ -67,11 +163,11 @@ class ProtectedActionAdmin(admin.ModelAdmin):
     fieldsets = (
         (None, {"fields": ("action", "description", "enabled", "fail_closed")}),
         (
-            _("Risk thresholds"),
+            "Пороговые значения риска",
             {"fields": ("base_risk_score", "challenge_threshold", "block_threshold")},
         ),
         (
-            _("Rate and diversity limits"),
+            "Лимиты частоты и разнообразия",
             {
                 "fields": (
                     "rate_window_seconds",
@@ -86,7 +182,7 @@ class ProtectedActionAdmin(admin.ModelAdmin):
             },
         ),
         (
-            _("Proof of work"),
+            "Proof-of-Work",
             {
                 "fields": (
                     "challenge_ttl_seconds",
@@ -116,7 +212,7 @@ def rotate_site_key(modeladmin, request, queryset: QuerySet):
 
 
 @admin.register(SiteKeyVersion)
-class SiteKeyVersionAdmin(admin.ModelAdmin):
+class SiteKeyVersionAdmin(SuperuserManagedAdmin):
     list_display = ("site_key", "status", "created_at", "not_before", "expires_at")
     list_filter = ("status",)
     readonly_fields = ("site_key", "status", "created_at", "not_before", "expires_at", "note")
@@ -211,7 +307,7 @@ def unblock_rules(modeladmin, request, queryset: QuerySet):
 
 
 @admin.register(BlockRule)
-class BlockRuleAdmin(admin.ModelAdmin):
+class BlockRuleAdmin(SuperuserManagedAdmin):
     form = BlockRuleAdminForm
     list_display = ("scope", "short_hash", "action", "source", "active", "expires_at")
     list_filter = ("scope", "source", "active", "action")

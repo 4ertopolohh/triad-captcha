@@ -106,7 +106,7 @@ describe('protected fetch', () => {
     expect(requests).toHaveLength(3);
     const [initial, challengeRequest, retry] = requests;
     expect(new URL(challengeRequest!.url).searchParams.get('action')).toBe('register');
-    expect(challengeRequest!.credentials).toBe('same-origin');
+    expect(challengeRequest!.credentials).toBe('include');
     expect(initial!.redirect).toBe('error');
     expect(challengeRequest!.redirect).toBe('error');
     expect(retry!.redirect).toBe('error');
@@ -221,6 +221,50 @@ describe('protected fetch', () => {
       ),
     ).rejects.toMatchObject({ code: 'ANTIBOT_CONFIGURATION_ERROR' });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('allows an explicitly trusted exact origin for protected and challenge requests', async () => {
+    const requests: Request[] = [];
+    let protectedCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const request = input as Request;
+      requests.push(request);
+      if (new URL(request.url).pathname === '/api/triadcaptcha/challenge/') {
+        return jsonResponse({ challenge });
+      }
+      protectedCalls += 1;
+      return protectedCalls === 1
+        ? jsonResponse({ error: { code: 'ANTIBOT_CHALLENGE_REQUIRED' } }, 428)
+        : jsonResponse({ ok: true });
+    }) as typeof fetch;
+    const protectedFetch = createProtectedFetch({
+      challengeUrl: 'https://api.example.test/api/triadcaptcha/challenge/',
+      fetch: fetchMock,
+      siteKey: 'site_public',
+      solver: async () => 'cHJvb2Y=',
+      trustedOrigins: ['https://api.example.test'],
+    });
+
+    await expect(protectedFetch(
+      'https://api.example.test/api/login/',
+      { credentials: 'include', method: 'POST' },
+      { action: 'login' },
+    )).resolves.toMatchObject({ status: 200 });
+    expect(requests).toHaveLength(3);
+    expect(requests[1]!.credentials).toBe('include');
+    expect(requests.every((request) => request.redirect === 'error')).toBe(true);
+  });
+
+  it.each([
+    ['https://*.example.test'],
+    ['https://api.example.test/path'],
+    ['https://user:pass@api.example.test'],
+    ['ftp://api.example.test'],
+  ])('rejects an invalid trusted origin: %s', (trustedOrigin) => {
+    expect(() => createProtectedFetch({
+      siteKey: 'site_public',
+      trustedOrigins: [trustedOrigin],
+    })).toThrowError(TriadCaptchaError);
   });
 
   it('maps an unavailable challenge endpoint to the public service code', async () => {

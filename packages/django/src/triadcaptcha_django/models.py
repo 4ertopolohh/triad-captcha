@@ -38,8 +38,8 @@ class ProtectionConfiguration(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        verbose_name = _("protection configuration")
-        verbose_name_plural = _("protection configuration")
+        verbose_name = "конфигурация защиты"
+        verbose_name_plural = "Конфигурация защиты"
 
     def clean(self) -> None:
         super().clean()
@@ -126,8 +126,8 @@ class ProtectedAction(models.Model):
 
     class Meta:
         ordering = ("action",)
-        verbose_name = _("protected action")
-        verbose_name_plural = _("protected actions")
+        verbose_name = "защищаемое действие"
+        verbose_name_plural = "Защищаемые действия"
 
     def clean(self) -> None:
         super().clean()
@@ -161,8 +161,8 @@ class SiteKeyVersion(models.Model):
 
     class Meta:
         ordering = ("-created_at",)
-        verbose_name = _("site key version")
-        verbose_name_plural = _("site key versions")
+        verbose_name = "версия публичного ключа"
+        verbose_name_plural = "Публичные ключи"
 
     @staticmethod
     def generate_key() -> str:
@@ -225,8 +225,8 @@ class BlockRule(models.Model):
             models.Index(fields=("scope", "value_hash", "active"), name="tc_block_lookup_ix"),
             models.Index(fields=("expires_at",), name="tc_block_expiry_ix"),
         ]
-        verbose_name = _("block rule")
-        verbose_name_plural = _("block rules")
+        verbose_name = "правило блокировки"
+        verbose_name_plural = "Правила блокировки"
 
     def is_effective(self, at=None) -> bool:
         at = at or timezone.now()
@@ -270,8 +270,8 @@ class SecurityEvent(models.Model):
             models.Index(fields=("identity_hash", "created_at"), name="tc_event_ident_time_ix"),
             models.Index(fields=("ip_hash", "created_at"), name="tc_event_ip_time_ix"),
         ]
-        verbose_name = _("security event")
-        verbose_name_plural = _("security events")
+        verbose_name = "событие безопасности"
+        verbose_name_plural = "Журнал безопасности"
 
     def __str__(self) -> str:
         return f"{self.created_at:%Y-%m-%d %H:%M:%S} {self.action} {self.decision}"

@@ -4,6 +4,10 @@ TriadCAPTCHA is a defence-in-depth component. It does not replace authentication
 authorization, CSRF protection, safe password storage, application validation, or
 an upstream denial-of-service perimeter.
 
+The React SDK is same-origin by default. If `trustedOrigins` is used, list only
+exact operator-controlled HTTP(S) origins, grant credentialed CORS narrowly, and
+never weaken the SDK's redirect rejection.
+
 Report suspected vulnerabilities privately to the repository maintainers. Do not
 include production secrets, raw identifiers, challenge payloads, or user data in
 an issue. Rotate `TRIADCAPTCHA_HMAC_SECRET` and

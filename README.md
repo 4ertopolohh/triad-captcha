@@ -21,7 +21,7 @@ request came from a human.
   HMAC pseudonymization, adaptive risk engine, ALTCHA server verification, and
   Redis replay/rate enforcement.
 - `@triadcaptcha/react`: React 18/19 hook and Fetch wrapper, local Web Worker,
-  same-origin enforcement, one automatic retry, stable typed errors, and bounded
+  same-origin-by-default enforcement with exact trusted origins, one automatic retry, stable typed errors, and bounded
   weak interaction signals.
 - PostgreSQL 17 + Redis 7.4 + Django + built React demo behind Nginx Compose.
 - Correctly separated Nginx `http`- and `server`-context rate-limit snippets.
@@ -258,8 +258,8 @@ return (
 );
 ```
 
-The SDK permits only same-origin HTTP(S) URLs, prevents redirects from forwarding
-proof headers, requests a challenge only for `ANTIBOT_CHALLENGE_REQUIRED`, solves
+The SDK permits same-origin HTTP(S) URLs and explicitly configured exact trusted
+origins, prevents redirects from forwarding proof headers, requests a challenge only for `ANTIBOT_CHALLENGE_REQUIRED`, solves
 PBKDF2/SHA in an emitted local module worker, and retries exactly once. It has no
 fingerprinting or analytics. See the full [React package guide](packages/react/README.md)
 and [demo source](examples/django-react-demo/frontend/src/App.tsx).

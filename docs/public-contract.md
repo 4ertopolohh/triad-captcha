@@ -26,8 +26,9 @@ GET /api/triadcaptcha/challenge/?action=register
 X-TriadCAPTCHA-Site-Key: tc_live_public_identifier
 ```
 
-The request uses the application's normal same-origin session cookie. A successful
-response is:
+The request uses the application's normal session cookie. Cross-origin API
+deployments must be explicitly trusted by the SDK and configured with narrow,
+credentialed CORS. A successful response is:
 
 ```json
 {
