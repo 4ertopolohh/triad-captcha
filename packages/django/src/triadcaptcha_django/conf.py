@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
 from django.conf import settings as django_settings
+from django.utils.module_loading import import_string
+
+
+class ConfigurationPending(RuntimeError):
+    """Raised by a runtime resolver while its persistent configuration is unavailable."""
 
 
 def _setting(name: str, default: Any = None) -> Any:
@@ -64,7 +70,16 @@ class TriadCaptchaSettings:
     audit_allow_sample_rate: float
 
 
-def get_settings() -> TriadCaptchaSettings:
+@dataclass(frozen=True)
+class SettingsState:
+    settings: TriadCaptchaSettings
+    pending: bool = False
+    error: str = ""
+
+
+def get_default_settings() -> TriadCaptchaSettings:
+    """Build settings from Django settings/environment without a runtime resolver."""
+
     secure_cookie = _setting("TRIADCAPTCHA_CONTEXT_COOKIE_SECURE", None)
     return TriadCaptchaSettings(
         site_key=str(_setting("TRIADCAPTCHA_SITE_KEY", "") or ""),
@@ -91,6 +106,63 @@ def get_settings() -> TriadCaptchaSettings:
             max(0.0, _float(_setting("TRIADCAPTCHA_AUDIT_ALLOW_SAMPLE_RATE", 0.05), 0.05)),
         ),
     )
+
+
+def _pending_settings() -> TriadCaptchaSettings:
+    defaults = get_default_settings()
+    return TriadCaptchaSettings(
+        site_key="",
+        hmac_secret="",
+        identifier_hmac_secret="",
+        redis_url="",
+        redis_prefix=defaults.redis_prefix,
+        redis_socket_timeout=defaults.redis_socket_timeout,
+        trusted_proxy_networks=defaults.trusted_proxy_networks,
+        development_mode=False,
+        context_cookie_name=defaults.context_cookie_name,
+        context_cookie_max_age=defaults.context_cookie_max_age,
+        context_cookie_secure=defaults.context_cookie_secure,
+        max_payload_bytes=defaults.max_payload_bytes,
+        max_metadata_bytes=defaults.max_metadata_bytes,
+        audit_allow_sample_rate=defaults.audit_allow_sample_rate,
+    )
+
+
+def _coerce_resolved_settings(value: Any) -> TriadCaptchaSettings:
+    if isinstance(value, TriadCaptchaSettings):
+        return value
+    if isinstance(value, Mapping):
+        defaults = get_default_settings()
+        merged = {field: getattr(defaults, field) for field in defaults.__dataclass_fields__}
+        merged.update(value)
+        return TriadCaptchaSettings(**merged)
+    raise TypeError("TriadCAPTCHA settings resolver must return TriadCaptchaSettings or a mapping.")
+
+
+def get_settings_state() -> SettingsState:
+    """Resolve the current configuration, including database-backed runtime loaders."""
+
+    resolver = getattr(django_settings, "TRIADCAPTCHA_SETTINGS_RESOLVER", None)
+    if not resolver:
+        return SettingsState(get_default_settings())
+    try:
+        if isinstance(resolver, str):
+            resolver = import_string(resolver)
+        if not callable(resolver):
+            raise TypeError("TRIADCAPTCHA_SETTINGS_RESOLVER must be callable or a dotted path.")
+        return SettingsState(_coerce_resolved_settings(resolver()))
+    except ConfigurationPending as exc:
+        return SettingsState(_pending_settings(), pending=True, error=str(exc))
+    except Exception as exc:  # fail closed; the system check exposes the resolver failure
+        return SettingsState(
+            _pending_settings(),
+            pending=True,
+            error=f"{exc.__class__.__name__}: {exc}",
+        )
+
+
+def get_settings() -> TriadCaptchaSettings:
+    return get_settings_state().settings
 
 
 def secret_is_acceptable(value: str) -> bool:

@@ -6,6 +6,17 @@ otherwise.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-07
+
+### Added
+
+- Runtime Django settings resolver for encrypted database-backed configuration.
+- Safe `ConfigurationPending` state that fails protection closed without blocking initial migrations.
+
+### Fixed
+
+- Bound the browser `fetch` receiver in the React SDK default client.
+
 ## [0.1.0] - 2026-08-07
 
 ### Added
@@ -19,6 +30,6 @@ otherwise.
 - Django admin, PostgreSQL audit/configuration models, demo, Docker Compose,
   Nginx rate-limit snippets, documentation, and CI.
 
-[Unreleased]: ../../compare/v0.1.0...HEAD
+[Unreleased]: ../../compare/v0.1.1...HEAD
+[0.1.1]: ../../compare/v0.1.0...v0.1.1
 [0.1.0]: ../../releases/tag/v0.1.0
-

@@ -6,7 +6,7 @@ from django.conf import settings as django_settings
 from django.core.checks import Error, Tags, Warning, register
 
 from .conf import (
-    get_settings,
+    get_settings_state,
     redis_url_is_valid,
     secret_is_acceptable,
     site_key_is_configured,
@@ -15,8 +15,22 @@ from .conf import (
 
 @register(Tags.security)
 def triadcaptcha_configuration_check(app_configs, **kwargs):
-    config = get_settings()
+    state = get_settings_state()
+    config = state.settings
     messages = []
+
+    if state.pending:
+        messages.append(
+            Warning(
+                "TriadCAPTCHA runtime configuration is pending.",
+                hint=(
+                    state.error
+                    or "Complete the runtime configuration before enabling protection."
+                ),
+                id="triadcaptcha.W002",
+            )
+        )
+        return messages
 
     if not secret_is_acceptable(config.hmac_secret):
         messages.append(

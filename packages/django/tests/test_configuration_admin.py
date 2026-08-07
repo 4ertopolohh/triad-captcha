@@ -14,6 +14,7 @@ from django.test import RequestFactory, override_settings
 from django.utils import timezone
 
 from triadcaptcha_django.admin import BlockRuleAdminForm, _admin_value_hash
+from triadcaptcha_django.conf import ConfigurationPending, get_settings, get_settings_state
 from triadcaptcha_django.models import (
     BlockRule,
     ProtectedAction,
@@ -122,6 +123,29 @@ def test_system_check_rejects_placeholder_secret():
 def test_system_check_rejects_site_key_that_cannot_fit_model():
     errors = checks.run_checks(tags=[checks.Tags.security])
     assert "triadcaptcha.E004" in {error.id for error in errors}
+
+
+def test_runtime_settings_resolver_accepts_mapping(settings):
+    settings.TRIADCAPTCHA_SETTINGS_RESOLVER = lambda: {
+        "site_key": "tc_site_runtime_resolver_123456",
+        "hmac_secret": "runtime-challenge-secret-0123456789-abcdef",
+    }
+    resolved = get_settings()
+    assert resolved.site_key == "tc_site_runtime_resolver_123456"
+    assert resolved.hmac_secret == "runtime-challenge-secret-0123456789-abcdef"
+    assert resolved.identifier_hmac_secret == settings.TRIADCAPTCHA_IDENTIFIER_HMAC_SECRET
+
+
+def test_pending_runtime_settings_fail_closed_without_blocking_checks(settings):
+    def pending():
+        raise ConfigurationPending("database row not initialized")
+
+    settings.TRIADCAPTCHA_SETTINGS_RESOLVER = pending
+    state = get_settings_state()
+    assert state.pending
+    assert state.settings.hmac_secret == ""
+    messages = checks.run_checks(tags=[checks.Tags.security])
+    assert {message.id for message in messages} == {"triadcaptcha.W002"}
 
 
 def test_bootstrap_is_idempotent_and_does_not_undo_rotation(settings):
