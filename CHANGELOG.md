@@ -2,6 +2,10 @@
 
 All notable changes to `@triadcaptcha/react` are documented here. The package follows Semantic Versioning and is versioned with repository tags.
 
+## 0.1.1 - 2026-08-07
+
+- Bound the default browser `fetch` to `globalThis`, preventing `Illegal invocation` failures in Chromium while preserving custom fetch implementations.
+
 ## 0.1.0 - 2026-08-07
 
 - Initial React 18/19 SDK.
