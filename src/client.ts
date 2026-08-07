@@ -32,6 +32,7 @@ interface PublicErrorData {
 interface NormalizedOptions {
   siteKey: string;
   challengeUrl: string;
+  trustedOrigins: ReadonlySet<string>;
   timeoutMs: number;
   workers: number;
   fetch: typeof fetch;
@@ -58,7 +59,7 @@ function currentOrigin(): string {
   return origin;
 }
 
-function resolveSameOriginUrl(input: string | URL): URL {
+function resolveTrustedUrl(input: string | URL, trustedOrigins: ReadonlySet<string>): URL {
   let url: URL;
   try {
     url = new URL(input.toString(), currentOrigin());
@@ -66,7 +67,7 @@ function resolveSameOriginUrl(input: string | URL): URL {
     throw new TriadCaptchaError('ANTIBOT_CONFIGURATION_ERROR', { cause: error });
   }
   if (
-    url.origin !== currentOrigin() ||
+    (url.origin !== currentOrigin() && !trustedOrigins.has(url.origin)) ||
     !['http:', 'https:'].includes(url.protocol) ||
     url.username !== '' ||
     url.password !== ''
@@ -80,8 +81,12 @@ function inputUrl(input: RequestInfo | URL): string | URL {
   return input instanceof Request ? input.url : input;
 }
 
-function createBaseRequest(input: RequestInfo | URL, init: RequestInit | undefined): Request {
-  const url = resolveSameOriginUrl(inputUrl(input));
+function createBaseRequest(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  trustedOrigins: ReadonlySet<string>,
+): Request {
+  const url = resolveTrustedUrl(inputUrl(input), trustedOrigins);
   try {
     const request = input instanceof Request
       ? new Request(input, init)
@@ -222,7 +227,7 @@ async function fetchChallenge(
   metadata: string | undefined,
   signal: AbortSignal,
 ): Promise<Challenge> {
-  const url = resolveSameOriginUrl(options.challengeUrl);
+  const url = resolveTrustedUrl(options.challengeUrl, options.trustedOrigins);
   url.searchParams.set('action', action);
   // A Request's signal can originate in another browser realm (for example an
   // iframe). Bridge it so the new Request always receives a local AbortSignal.
@@ -235,7 +240,7 @@ async function fetchChallenge(
   }
   const request = new Request(url, {
     cache: 'no-store',
-    credentials: 'same-origin',
+    credentials: 'include',
     headers: challengeRequestHeaders(options, metadata),
     method: 'GET',
     redirect: 'error',
@@ -286,9 +291,31 @@ function normalizeOptions(options: TriadCaptchaClientOptions): NormalizedOptions
   if (typeof fetchImplementation !== 'function') {
     throw new TriadCaptchaError('ANTIBOT_CONFIGURATION_ERROR');
   }
+  const trustedOrigins = new Set<string>();
+  for (const value of options.trustedOrigins ?? []) {
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch (error) {
+      throw new TriadCaptchaError('ANTIBOT_CONFIGURATION_ERROR', { cause: error });
+    }
+    if (
+      !['http:', 'https:'].includes(url.protocol) ||
+      url.username !== '' ||
+      url.password !== '' ||
+      url.pathname !== '/' ||
+      url.search !== '' ||
+      url.hash !== '' ||
+      value.includes('*')
+    ) {
+      throw new TriadCaptchaError('ANTIBOT_CONFIGURATION_ERROR');
+    }
+    trustedOrigins.add(url.origin);
+  }
   return {
     siteKey: options.siteKey,
     challengeUrl: options.challengeUrl ?? DEFAULT_CHALLENGE_URL,
+    trustedOrigins,
     timeoutMs,
     workers,
     fetch: fetchImplementation,
@@ -321,7 +348,7 @@ async function protectedFetchImpl(
   context: ProtectedFetchContext,
 ): Promise<Response> {
   assertAction(context.action);
-  const baseRequest = createBaseRequest(input, init);
+  const baseRequest = createBaseRequest(input, init, options.trustedOrigins);
   const metadata = encodeMetadata(context.metadata);
   const initialRequest = withProtectionHeaders(
     baseRequest,

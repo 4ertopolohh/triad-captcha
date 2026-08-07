@@ -1,6 +1,6 @@
 # `@triadcaptcha/react`
 
-Invisible, same-origin React SDK for a self-hosted TriadCAPTCHA Django backend. It has no widget, analytics, third-party requests, or default browser fingerprinting. Proof-of-work runs in Web Workers.
+Invisible React SDK for a self-hosted TriadCAPTCHA Django backend. It is same-origin by default and can be restricted to explicitly trusted exact origins for split frontend/API deployments. It has no widget, analytics, third-party requests, or default browser fingerprinting. Proof-of-work runs in Web Workers.
 
 ## Compatibility
 
@@ -27,6 +27,9 @@ import { createProtectedFetch, isTriadCaptchaError } from '@triadcaptcha/react';
 
 const protectedFetch = createProtectedFetch({
   siteKey: import.meta.env.VITE_TRIADCAPTCHA_SITE_KEY,
+  // Omit for the safer same-origin default. Never use wildcards.
+  trustedOrigins: ['https://api.example.com'],
+  challengeUrl: 'https://api.example.com/api/triadcaptcha/challenge/',
 });
 
 try {
@@ -125,4 +128,4 @@ The retry adds `X-TriadCAPTCHA-Payload`, a standard Base64-encoded UTF-8 JSON ob
 
 Public errors use either `{ "error": { "code": "...", "retry_after": 30 } }` or top-level `code`/`retry_after`. Status `428` is the recommended challenge-required response. The SDK exposes only stable public codes and never server-side risk reasons.
 
-All protected and challenge URLs are required to be same-origin. Redirect following is disabled so proof headers cannot cross an origin boundary; use canonical Django URLs (including their trailing slash). The wrapper preserves request bodies for exactly one retry and overrides caller-supplied TriadCAPTCHA headers to prevent accidental replay.
+Protected and challenge URLs are required to be same-origin unless their exact HTTP(S) origin is listed in `trustedOrigins`. Wildcards, credentials, paths, queries, and fragments are rejected in trusted-origin entries. Cross-origin challenge requests use credentialed Fetch, so the backend must grant credentialed CORS only to the intended frontend origin and allow the four `X-TriadCAPTCHA-*` headers. Redirect following is disabled so proof headers cannot cross an origin boundary; use canonical Django URLs (including their trailing slash). The wrapper preserves request bodies for exactly one retry and overrides caller-supplied TriadCAPTCHA headers to prevent accidental replay.

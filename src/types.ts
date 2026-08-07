@@ -56,8 +56,14 @@ export type ProofOfWorkSolver = (
 export interface TriadCaptchaClientOptions {
   /** Public installation identifier. It is not a security secret. */
   siteKey: string;
-  /** Same-origin URL. Defaults to `/api/triadcaptcha/challenge/`. */
+  /** URL accepted by the same-origin/trusted-origin policy. */
   challengeUrl?: string;
+  /**
+   * Exact additional HTTP(S) origins trusted to receive TriadCAPTCHA headers.
+   * Same-origin remains allowed automatically. Wildcards and URLs with paths,
+   * credentials, queries, or fragments are rejected.
+   */
+  trustedOrigins?: readonly string[];
   /** Maximum PoW time. Defaults to 30 seconds. */
   timeoutMs?: number;
   /** Number of official ALTCHA workers. Defaults to 1..4 based on hardware. */
