@@ -1,0 +1,113 @@
+name: triadcaptcha
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-triadcaptcha_demo}
+      POSTGRES_USER: ${POSTGRES_USER:-triadcaptcha}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    networks: [backend]
+    security_opt:
+      - no-new-privileges:true
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      # Reference profile favours replay durability over write throughput.
+      - always
+      - --save
+      - "60"
+      - "1000"
+    volumes:
+      # AOF preserves unexpired replay/rate-limit keys across routine restarts.
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks: [backend]
+    security_opt:
+      - no-new-privileges:true
+    # Deliberately no `ports`: Redis is reachable only on the backend network.
+
+  backend:
+    build:
+      context: ..
+      dockerfile: examples/django-react-demo/backend/Dockerfile
+    restart: unless-stopped
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?DJANGO_SECRET_KEY is required}
+      DJANGO_DEBUG: "0"
+      # The bundled demo is served on plain http://localhost. Set this to 1
+      # only when a trusted TLS edge supplies the effective HTTPS scheme.
+      DJANGO_SECURE_COOKIES: ${DJANGO_SECURE_COOKIES:-0}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-http://localhost:8080}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      TRIADCAPTCHA_REDIS_URL: ${TRIADCAPTCHA_REDIS_URL:?TRIADCAPTCHA_REDIS_URL is required}
+      TRIADCAPTCHA_SITE_KEY: ${TRIADCAPTCHA_SITE_KEY:?TRIADCAPTCHA_SITE_KEY is required}
+      TRIADCAPTCHA_HMAC_SECRET: ${TRIADCAPTCHA_HMAC_SECRET:?TRIADCAPTCHA_HMAC_SECRET is required}
+      TRIADCAPTCHA_IDENTIFIER_HMAC_SECRET: ${TRIADCAPTCHA_IDENTIFIER_HMAC_SECRET:?TRIADCAPTCHA_IDENTIFIER_HMAC_SECRET is required}
+      TRIADCAPTCHA_TRUSTED_PROXY_NETWORKS: ${TRIADCAPTCHA_TRUSTED_PROXY_NETWORKS:-172.16.0.0/12}
+      TRIADCAPTCHA_DEVELOPMENT_MODE: "0"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    expose: ["8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    networks: [backend]
+    security_opt:
+      - no-new-privileges:true
+
+  nginx:
+    build:
+      context: ..
+      dockerfile: infra/nginx/Dockerfile
+      args:
+        VITE_TRIADCAPTCHA_SITE_KEY: ${TRIADCAPTCHA_SITE_KEY:?TRIADCAPTCHA_SITE_KEY is required}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+    networks: [backend]
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  backend:
+    internal: false
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,462 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*", "react-v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_COLOR: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  python-quality:
+    name: Python lint and repository contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: packages/django/pyproject.toml
+
+      - name: Install Python quality tools
+        run: python -m pip install -e "./packages/django[test,lint]"
+
+      - name: Lint Python
+        run: >-
+          python -m ruff check packages/django tests scripts
+          examples/django-react-demo/backend
+
+      - name: Check shared release version
+        run: python scripts/check_versions.py
+
+      - name: Test repository security contract
+        run: python -m pytest tests
+
+  python-legacy:
+    name: Python 3.10 / Django 4.2 legacy compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      TRIADCAPTCHA_HMAC_SECRET: ci_hmac_secret_at_least_32_bytes_long
+      TRIADCAPTCHA_IDENTIFIER_HMAC_SECRET: ci_identifier_secret_at_least_32_bytes
+      TRIADCAPTCHA_REDIS_URL: redis://127.0.0.1:6379/15
+      TRIADCAPTCHA_SITE_KEY: tc_ci_public_site_key
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: packages/django/pyproject.toml
+
+      - name: Install package and legacy Django
+        run: python -m pip install -e "./packages/django[test]" "Django>=4.2,<4.3"
+
+      - name: Report resolved compatibility versions
+        run: python -c "from importlib.metadata import version; print('Django', version('Django'), 'ALTCHA', version('altcha'), 'redis', version('redis'))"
+
+      - name: Enforce ALTCHA security floor
+        run: python -c "from importlib.metadata import version; assert tuple(map(int, version('altcha').split('.')[:3])) >= (2, 1, 0)"
+
+      - name: Run Django package tests
+        working-directory: packages/django
+        run: python -m pytest tests --cov=triadcaptcha_django --cov-report=term-missing
+
+  python-production:
+    name: Python ${{ matrix.python }} / Django ${{ matrix.django }} production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.13"
+            django: "5.2"
+            django_spec: "Django>=5.2,<5.3"
+          - python: "3.13"
+            django: "6.0"
+            django_spec: "Django>=6.0,<6.1"
+          - python: "3.14"
+            django: "6.1"
+            django_spec: "Django>=6.1,<6.2"
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      TRIADCAPTCHA_HMAC_SECRET: ci_hmac_secret_at_least_32_bytes_long
+      TRIADCAPTCHA_IDENTIFIER_HMAC_SECRET: ci_identifier_secret_at_least_32_bytes
+      TRIADCAPTCHA_REDIS_URL: redis://127.0.0.1:6379/15
+      TRIADCAPTCHA_SITE_KEY: tc_ci_public_site_key
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: packages/django/pyproject.toml
+
+      - name: Install package and selected Django
+        run: python -m pip install -e "./packages/django[test]" "${{ matrix.django_spec }}"
+
+      - name: Report resolved compatibility versions
+        run: python -c "from importlib.metadata import version; print('Django', version('Django'), 'ALTCHA', version('altcha'), 'redis', version('redis'))"
+
+      - name: Enforce ALTCHA security floor
+        run: python -c "from importlib.metadata import version; assert tuple(map(int, version('altcha').split('.')[:3])) >= (2, 1, 0)"
+
+      - name: Run Django package tests
+        working-directory: packages/django
+        run: python -m pytest tests --cov=triadcaptcha_django --cov-report=term-missing
+
+  python-integration:
+    name: Python integration / Redis 7.4 / PostgreSQL 17
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: triadcaptcha_test
+          POSTGRES_USER: triadcaptcha
+          POSTGRES_PASSWORD: triadcaptcha_ci_database_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U triadcaptcha -d triadcaptcha_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      POSTGRES_DB: triadcaptcha_test
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PASSWORD: triadcaptcha_ci_database_password
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: triadcaptcha
+      TRIADCAPTCHA_REDIS_PREFIX: triadcaptcha:ci:${{ github.run_id }}:${{ github.run_attempt }}
+      TRIADCAPTCHA_REDIS_URL: redis://127.0.0.1:6379/15
+      TRIADCAPTCHA_TEST_POSTGRES: "1"
+      TRIADCAPTCHA_TEST_REAL_REDIS: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: packages/django/pyproject.toml
+
+      - name: Install package and PostgreSQL driver
+        run: >-
+          python -m pip install -e "./packages/django[test]"
+          "Django>=6.1,<6.2" "psycopg[binary]>=3.2,<4"
+
+      - name: Run full tests against real services
+        working-directory: packages/django
+        run: python -m pytest tests
+
+  python-package:
+    name: Build Python distributions
+    needs: [python-quality, python-legacy, python-production, python-integration]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: packages/django/pyproject.toml
+
+      - name: Install packaging tools
+        run: python -m pip install build twine
+
+      - name: Build wheel and source distribution
+        run: python -m build packages/django
+
+      - name: Validate distribution metadata
+        run: python -m twine check packages/django/dist/*
+
+      - name: Validate distribution contents
+        run: |
+          python - <<'PY'
+          import glob
+          import tarfile
+          import zipfile
+          from pathlib import Path
+
+          wheel = glob.glob("packages/django/dist/*.whl")
+          sdist = glob.glob("packages/django/dist/*.tar.gz")
+          assert len(wheel) == 1 and len(sdist) == 1
+
+          with zipfile.ZipFile(wheel[0]) as archive:
+              wheel_files = set(archive.namelist())
+          for required in (
+              "triadcaptcha_django/admin.py",
+              "triadcaptcha_django/management/commands/cleanup_triadcaptcha.py",
+              "triadcaptcha_django/migrations/0001_initial.py",
+          ):
+              assert required in wheel_files, f"Missing wheel file: {required}"
+
+          with tarfile.open(sdist[0]) as archive:
+              sdist_files = set(archive.getnames())
+          prefix = f"triadcaptcha_django-{Path('VERSION').read_text().strip()}/"
+          for required in ("tests/conftest.py", "tests/settings.py", "tests/helpers.py"):
+              assert prefix + required in sdist_files, f"Missing sdist file: {required}"
+          PY
+
+      - name: Smoke-test built wheel
+        run: |
+          python -m pip install --no-deps packages/django/dist/*.whl
+          python -c "import triadcaptcha_django; print(triadcaptcha_django.__version__)"
+
+      - name: Upload Python distributions
+        uses: actions/upload-artifact@v6
+        with:
+          name: triadcaptcha-django-dist
+          path: packages/django/dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  react-check:
+    name: React ${{ matrix.react }} SDK checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        react: ["18", "19"]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20.19"
+          cache: npm
+          cache-dependency-path: packages/react/package-lock.json
+
+      - name: Install locked dependencies
+        working-directory: packages/react
+        run: npm ci
+
+      - name: Select React 18 compatibility dependencies
+        if: matrix.react == '18'
+        working-directory: packages/react
+        run: npm install --no-save --no-package-lock "react@^18.2.0" "react-dom@^18.2.0" "@types/react@^18" "@types/react-dom@^18"
+
+      - name: Type-check
+        working-directory: packages/react
+        run: npm run typecheck
+
+      - name: Lint
+        working-directory: packages/react
+        run: npm run lint
+
+      - name: Test
+        working-directory: packages/react
+        run: npm test
+
+      - name: Build
+        working-directory: packages/react
+        run: npm run build
+
+  react-package:
+    name: Pack React SDK
+    needs: react-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20.19"
+          cache: npm
+          cache-dependency-path: packages/react/package-lock.json
+
+      - name: Install locked dependencies
+        working-directory: packages/react
+        run: npm ci
+
+      - name: Build package contents
+        working-directory: packages/react
+        run: npm run build
+
+      - name: Create npm package tarball
+        working-directory: packages/react
+        run: npm pack --ignore-scripts --json > npm-pack.json
+
+      - name: Validate packed files
+        working-directory: packages/react
+        run: >-
+          node -e "const report=require('./npm-pack.json')[0];
+          const files=new Set(report.files.map(({path})=>path));
+          for (const required of ['package.json','README.md','CHANGELOG.md','dist/index.js','dist/index.d.ts']) {
+          if (!files.has(required)) throw new Error('Missing packed file: '+required); }
+          if (![...files].some(path=>/^dist\/assets\/pow\.worker-.*\.js$/.test(path))) {
+          throw new Error('Missing packed proof-of-work worker asset'); }"
+
+      - name: Upload npm package
+        uses: actions/upload-artifact@v6
+        with:
+          name: triadcaptcha-react-package
+          path: packages/react/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  demo-smoke:
+    name: Django + React demo smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: sqlite:////tmp/triadcaptcha-demo.sqlite3
+      DJANGO_DEBUG: "1"
+      DJANGO_SECRET_KEY: ci_demo_django_secret_key_at_least_32_bytes
+      TRIADCAPTCHA_DEVELOPMENT_MODE: "0"
+      TRIADCAPTCHA_HMAC_SECRET: ci_demo_hmac_secret_at_least_32_bytes
+      TRIADCAPTCHA_IDENTIFIER_HMAC_SECRET: ci_demo_identifier_secret_at_least_32_bytes
+      TRIADCAPTCHA_REDIS_URL: redis://127.0.0.1:6379/14
+      TRIADCAPTCHA_REDIS_PREFIX: triadcaptcha:ci:demo:${{ github.run_id }}:${{ github.run_attempt }}
+      TRIADCAPTCHA_SITE_KEY: tc_ci_demo_public_site_key
+      VITE_TRIADCAPTCHA_SITE_KEY: tc_ci_demo_public_site_key
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            packages/django/pyproject.toml
+            examples/django-react-demo/backend/requirements.txt
+
+      - name: Install Django package and demo requirements
+        run: >-
+          python -m pip install -e "./packages/django"
+          -r examples/django-react-demo/backend/requirements.txt
+
+      - name: Check demo Django configuration
+        run: python examples/django-react-demo/backend/manage.py check
+
+      - name: Check committed migrations
+        run: >-
+          python examples/django-react-demo/backend/manage.py makemigrations
+          triadcaptcha_django --check --dry-run
+
+      - name: Apply demo migrations to SQLite
+        run: python examples/django-react-demo/backend/manage.py migrate --noinput
+
+      - name: Exercise protected demo request and replay flow
+        run: python examples/django-react-demo/backend/manage.py test demo_api --verbosity 2
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20.19"
+          cache: npm
+          cache-dependency-path: |
+            packages/react/package-lock.json
+            examples/django-react-demo/frontend/package-lock.json
+
+      - name: Install and build React SDK
+        working-directory: packages/react
+        run: |
+          npm ci
+          npm run build
+
+      - name: Verify worker asset URL is package-relative
+        run: grep -Fq 'new URL("assets/pow.worker-' packages/react/dist/index.js
+
+      - name: Install demo frontend dependencies
+        working-directory: examples/django-react-demo/frontend
+        run: npm ci
+
+      - name: Check and build demo frontend
+        working-directory: examples/django-react-demo/frontend
+        run: |
+          npm run lint
+          npm run typecheck
+          npm run build
+
+  compose-config:
+    name: Validate and build Docker Compose deployment
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Render Compose configuration
+        run: docker compose --env-file .env.example -f infra/docker-compose.yml config --quiet
+
+      - name: Build demo backend and Nginx/frontend images
+        run: docker compose --env-file .env.example -f infra/docker-compose.yml build
