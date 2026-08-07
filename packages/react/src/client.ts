@@ -287,7 +287,10 @@ function normalizeOptions(options: TriadCaptchaClientOptions): NormalizedOptions
   if (!Number.isSafeInteger(workers) || workers < 1 || workers > 16) {
     throw new TriadCaptchaError('ANTIBOT_CONFIGURATION_ERROR');
   }
-  const fetchImplementation = options.fetch ?? globalThis.fetch;
+  const globalFetch = globalThis.fetch;
+  const fetchImplementation = options.fetch ?? (
+    typeof globalFetch === 'function' ? globalFetch.bind(globalThis) : globalFetch
+  );
   if (typeof fetchImplementation !== 'function') {
     throw new TriadCaptchaError('ANTIBOT_CONFIGURATION_ERROR');
   }

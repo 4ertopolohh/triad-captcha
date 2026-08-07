@@ -1,6 +1,6 @@
 {
   "name": "@triadcaptcha/react",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Invisible, same-origin TriadCAPTCHA client for React 18 and 19",
   "type": "module",
   "sideEffects": false,

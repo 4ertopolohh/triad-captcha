@@ -38,6 +38,23 @@ function decodeBase64UrlJson(value: string): unknown {
 }
 
 describe('protected fetch', () => {
+  it('binds the default browser fetch to globalThis', async () => {
+    const originalFetch = globalThis.fetch;
+    const receiverAwareFetch = vi.fn(function (this: unknown) {
+      if (this !== globalThis) throw new TypeError('Illegal invocation');
+      return Promise.resolve(jsonResponse({ ok: true }));
+    }) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', receiverAwareFetch);
+    try {
+      const protectedFetch = createProtectedFetch({ siteKey: 'site_public' });
+      await expect(protectedFetch('/api/contact/', { method: 'POST' }, {
+        action: 'contact',
+      })).resolves.toBeInstanceOf(Response);
+    } finally {
+      vi.stubGlobal('fetch', originalFetch);
+    }
+  });
+
   it('returns a low-risk response without requesting a challenge', async () => {
     const requests: Request[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
