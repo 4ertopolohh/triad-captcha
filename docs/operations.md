@@ -99,3 +99,20 @@ must terminate TLS at a separately reviewed edge; enable HSTS there only after a
 covered hosts are HTTPS. Isolate `/admin/` behind VPN, private listener, or an
 identity-aware proxy with MFA/SSO. The demo's admin-login rate limit is only a
 coarse ceiling, not an access boundary.
+
+CI installs Python test, audit, and release tooling from
+`.github/requirements-ci.lock` with hashes and installs the library itself with
+`--no-deps`; each supported Django line has its own hash-locked
+`.github/requirements-django*.lock` selected by the matrix.
+Regenerate the lock from `.github/requirements-ci.in`, retaining the explicitly
+hashed `exceptiongroup` and `typing-extensions` markers required by older Python
+matrix lanes, review the result, and validate it for every matrix Python before
+merging. Node test inputs,
+including the single-Chromium browser contract harness, use committed npm locks.
+High/Critical image findings fail CI, including findings without a vendor fix. Any
+temporary exception must instead name the CVE, rationale, owner, and expiry in a
+reviewed ignore policy; there is no blanket ignore in the reference workflow.
+The known Django 4.2 advisories are listed in
+`.github/security-audit-ignores.txt` only for the legacy compatibility lane; CI
+fails when that time-bounded policy expires, and production preflight still
+rejects Django 4.2.

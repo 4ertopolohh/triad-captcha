@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import secrets
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
-from functools import lru_cache
 
 import redis
 from redis.exceptions import RedisError
@@ -134,27 +135,39 @@ class RedisUnavailable(RuntimeError):
     pass
 
 
-@lru_cache(maxsize=4)
 def _client_for(
     url: str,
     socket_timeout: float,
     max_connections: int,
     pool_timeout: float,
 ):
-    pool = redis.BlockingConnectionPool.from_url(
-        url,
-        max_connections=max(1, max_connections),
-        timeout=max(0.01, pool_timeout),
-        decode_responses=True,
-        socket_connect_timeout=socket_timeout,
-        socket_timeout=socket_timeout,
-        health_check_interval=30,
-    )
-    _CLIENT_POOLS.add(pool)
-    return redis.Redis(connection_pool=pool)
+    cache_key = (url, socket_timeout, max_connections, pool_timeout)
+    with _CLIENTS_LOCK:
+        cached = _CLIENTS.pop(cache_key, None)
+        if cached is not None:
+            _CLIENTS[cache_key] = cached
+            return cached
+
+        pool = redis.BlockingConnectionPool.from_url(
+            url,
+            max_connections=max(1, max_connections),
+            timeout=max(0.01, pool_timeout),
+            decode_responses=True,
+            socket_connect_timeout=socket_timeout,
+            socket_timeout=socket_timeout,
+            health_check_interval=30,
+        )
+        client = redis.Redis(connection_pool=pool)
+        _CLIENTS[cache_key] = client
+        if len(_CLIENTS) > _CLIENT_CACHE_SIZE:
+            _, evicted = _CLIENTS.popitem(last=False)
+            evicted.connection_pool.disconnect()
+        return client
 
 
-_CLIENT_POOLS: set[redis.BlockingConnectionPool] = set()
+_CLIENT_CACHE_SIZE = 4
+_CLIENTS_LOCK = threading.RLock()
+_CLIENTS: OrderedDict[tuple[str, float, int, float], redis.Redis] = OrderedDict()
 
 
 def get_redis_client():
@@ -168,10 +181,11 @@ def get_redis_client():
 
 
 def clear_client_cache() -> None:
-    for pool in tuple(_CLIENT_POOLS):
-        pool.disconnect()
-    _CLIENT_POOLS.clear()
-    _client_for.cache_clear()
+    with _CLIENTS_LOCK:
+        clients = tuple(_CLIENTS.values())
+        _CLIENTS.clear()
+    for client in clients:
+        client.connection_pool.disconnect()
 
 
 @dataclass(frozen=True)

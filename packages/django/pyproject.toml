@@ -16,7 +16,6 @@ classifiers = [
   "Framework :: Django :: 4.2",
   "Framework :: Django :: 5.2",
   "Framework :: Django :: 6.0",
-  "Framework :: Django :: 6.1",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
@@ -33,6 +32,7 @@ dependencies = [
 [project.optional-dependencies]
 test = [
   "fakeredis[lua]>=2.23,<3",
+  "hypothesis>=6.100,<7",
   "pytest>=8,<10",
   # 4.12+ assumes Django TestCase internals introduced after Django 4.2.
   "pytest-django>=4.8,<4.12",

@@ -1,8 +1,11 @@
-# Keep these compatible ranges aligned with the demo and library support policy.
+# Keep runtime ranges aligned with the demo/library policy; build tools are exact
+# so the hashed image lock can install the local package without build isolation.
 Django>=5.2,<6.2
 altcha>=2.1.0,<3
 redis>=6,<9
 dj-database-url>=2.3,<4
 gunicorn>=23,<24
 psycopg[binary]>=3.2,<4
+setuptools==83.0.0
 whitenoise>=6.8,<7
+wheel==0.48.0

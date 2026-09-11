@@ -5,7 +5,11 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from django.db import OperationalError
 from django.test import RequestFactory, override_settings
+from hypothesis import HealthCheck, given
+from hypothesis import settings as hypothesis_settings
+from hypothesis import strategies as st
 from redis.exceptions import ConnectionError
 
 from triadcaptcha_django import redis_backend
@@ -153,6 +157,29 @@ def test_redis_outage_fails_closed(policy, monkeypatch):
     assert result.http_status == 503
 
 
+def test_database_failure_fails_closed_before_business_operation(
+    client, policy, monkeypatch
+):
+    def database_unavailable(*args, **kwargs):
+        raise OperationalError("database unavailable")
+
+    monkeypatch.setattr(ProtectionConfiguration.objects, "filter", database_unavailable)
+    reset_business_invocations()
+
+    response = client.post(
+        "/protected/",
+        data=json.dumps({"email": "one@example.test"}),
+        content_type="application/json",
+        headers={
+            "X-TriadCAPTCHA-Site-Key": "tc_site_test_public_identifier_123456789",
+            "X-TriadCAPTCHA-Action": "register",
+        },
+    )
+
+    assert response.status_code == 503
+    assert get_business_invocations() == 0
+
+
 def test_supplied_proof_never_fails_open(policy, monkeypatch):
     policy.fail_closed = False
     policy.save()
@@ -263,6 +290,69 @@ def test_metadata_input_corpus_never_reaches_business_logic(
     )
 
     assert response.status_code == 400
+    assert get_business_invocations() == 0
+
+
+_JSON_SCALARS = st.one_of(
+    st.none(),
+    st.booleans(),
+    st.integers(min_value=-(2**31), max_value=2**31 - 1),
+    st.floats(allow_nan=False, allow_infinity=False),
+    st.text(max_size=64),
+)
+_JSON_VALUES = st.recursive(
+    _JSON_SCALARS,
+    lambda children: st.one_of(
+        st.lists(children, max_size=5),
+        st.dictionaries(st.text(max_size=24), children, max_size=5),
+    ),
+    max_leaves=12,
+)
+
+
+@given(
+    proof=_JSON_VALUES,
+    metadata=st.text(
+        alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_+=/%",
+        max_size=512,
+    ),
+)
+@hypothesis_settings(
+    max_examples=40,
+    deadline=None,
+    suppress_health_check=(HealthCheck.function_scoped_fixture,),
+)
+def test_generated_proof_and_metadata_inputs_never_invoke_business_logic(
+    client, settings, policy, proof, metadata
+):
+    policy.base_risk_score = policy.challenge_threshold
+    policy.ip_limit = 1000
+    policy.identity_limit = 1000
+    policy.session_limit = 1000
+    policy.ip_identity_limit = 1000
+    policy.save(
+        update_fields=(
+            "base_risk_score",
+            "ip_limit",
+            "identity_limit",
+            "session_limit",
+            "ip_identity_limit",
+        )
+    )
+    reset_business_invocations()
+
+    response = client.post(
+        "/protected/",
+        data=json.dumps({"email": "person@example.test", "_triadcaptcha": proof}),
+        content_type="application/json",
+        headers={
+            "X-TriadCAPTCHA-Site-Key": settings.TRIADCAPTCHA_SITE_KEY,
+            "X-TriadCAPTCHA-Action": "register",
+            "X-TriadCAPTCHA-Metadata": metadata,
+        },
+    )
+
+    assert response.status_code in {400, 428}
     assert get_business_invocations() == 0
 
 

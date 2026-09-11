@@ -1,0 +1,8 @@
+# advisory|owner|expiry (UTC)|rationale
+PYSEC-2026-198|triadcaptcha-security-maintainers|2026-12-31|Django 4.2 legacy compatibility only; production preflight requires Django 5.2+
+PYSEC-2026-199|triadcaptcha-security-maintainers|2026-12-31|Django 4.2 legacy compatibility only; production preflight requires Django 5.2+
+PYSEC-2026-201|triadcaptcha-security-maintainers|2026-12-31|Django 4.2 legacy compatibility only; production preflight requires Django 5.2+
+PYSEC-2026-2090|triadcaptcha-security-maintainers|2026-12-31|Django 4.2 legacy compatibility only; production preflight requires Django 5.2+
+PYSEC-2026-2091|triadcaptcha-security-maintainers|2026-12-31|Django 4.2 legacy compatibility only; production preflight requires Django 5.2+
+PYSEC-2026-2092|triadcaptcha-security-maintainers|2026-12-31|Django 4.2 legacy compatibility only; production preflight requires Django 5.2+
+PYSEC-2026-3717|triadcaptcha-security-maintainers|2026-12-31|Django 4.2 legacy compatibility only; production preflight requires Django 5.2+

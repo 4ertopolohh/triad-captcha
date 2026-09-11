@@ -186,6 +186,27 @@ def test_redis_client_uses_bounded_pool_and_disconnects_on_cache_clear(monkeypat
     assert disconnected == [True]
 
 
+def test_redis_client_cache_disconnects_evicted_pools(monkeypatch):
+    redis_backend.clear_client_cache()
+    disconnected: list[str] = []
+
+    for database in range(5):
+        client = redis_backend._client_for(
+            f"redis://127.0.0.1:6379/{database}", 0.5, 2, 0.1
+        )
+        monkeypatch.setattr(
+            client.connection_pool,
+            "disconnect",
+            lambda database=database: disconnected.append(str(database)),
+        )
+
+    assert disconnected == ["0"]
+    assert len(redis_backend._CLIENTS) == 4
+
+    redis_backend.clear_client_cache()
+    assert set(disconnected) == {"0", "1", "2", "3", "4"}
+
+
 def test_bootstrap_is_idempotent_and_does_not_undo_rotation(settings):
     stdout = StringIO()
     call_command("bootstrap_triadcaptcha", "--actions", "register", "login", stdout=stdout)

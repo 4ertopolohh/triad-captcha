@@ -11,7 +11,7 @@ WORKDIR /app
 COPY packages/django /build/triadcaptcha-django
 COPY examples/django-react-demo/backend/requirements.lock /tmp/requirements.lock
 RUN python -m pip install --require-hashes -r /tmp/requirements.lock \
-    && python -m pip install --no-deps /build/triadcaptcha-django \
+    && python -m pip install --no-deps --no-build-isolation /build/triadcaptcha-django \
     && rm -rf /build /tmp/requirements.lock
 
 COPY examples/django-react-demo/backend /app

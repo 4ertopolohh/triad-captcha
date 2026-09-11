@@ -3,20 +3,24 @@ from __future__ import annotations
 import base64
 import json
 import os
+import socket
 import threading
 import time
+from datetime import timedelta
 
 import pytest
 import redis as redis_lib
 from altcha import Challenge, Payload, create_challenge, solve_challenge, verify_solution
 from django.contrib.sessions.models import Session
+from django.db import connection
 from django.http import HttpResponse
 from django.test import Client, RequestFactory, override_settings
+from django.utils import timezone
 
 from triadcaptcha_django import redis_backend
 from triadcaptcha_django.challenge import _derived_key_secret, verify_and_consume
 from triadcaptcha_django.errors import ErrorCode, TriadCaptchaFailure
-from triadcaptcha_django.models import BlockRule, SecurityEvent
+from triadcaptcha_django.models import BlockRule, SecurityEvent, SiteKeyVersion
 from triadcaptcha_django.redis_backend import (
     clear_temporary_block,
     consume_challenge,
@@ -136,6 +140,122 @@ def test_missing_or_malformed_site_key_does_not_spend_issuance_quota(
         malformed_attempt.status_code,
         valid.status_code,
     ] == [400, 400, 400, 200]
+
+
+def test_challenge_issuance_honours_database_site_key_lifecycle(
+    client, settings, policy
+):
+    active = SiteKeyVersion.objects.get(status=SiteKeyVersion.Status.ACTIVE)
+    grace = SiteKeyVersion.objects.create(
+        site_key="tc_site_grace_public_identifier_123456789",
+        status=SiteKeyVersion.Status.GRACE,
+        expires_at=timezone.now() + timedelta(hours=1),
+    )
+    expired = SiteKeyVersion.objects.create(
+        site_key="tc_site_expired_public_identifier_1234567",
+        status=SiteKeyVersion.Status.GRACE,
+        expires_at=timezone.now() - timedelta(seconds=1),
+    )
+    revoked = SiteKeyVersion.objects.create(
+        site_key="tc_site_revoked_public_identifier_1234567",
+        status=SiteKeyVersion.Status.REVOKED,
+    )
+
+    def issue(site_key: str):
+        attempt = create_attempt(
+            "register",
+            site_key_marker(site_key),
+            "",
+            "",
+            90,
+        )
+        return client.get(
+            "/api/triadcaptcha/challenge/",
+            {"action": "register"},
+            headers={
+                "X-TriadCAPTCHA-Site-Key": site_key,
+                "X-TriadCAPTCHA-Attempt": attempt,
+            },
+        )
+
+    responses = [issue(item.site_key) for item in (active, grace, expired, revoked)]
+    assert [response.status_code for response in responses] == [200, 200, 400, 400]
+    assert responses[0].json()["site_key"] == active.site_key
+    assert responses[1].json()["site_key"] == active.site_key
+
+    probe = RequestFactory().get("/", REMOTE_ADDR="127.0.0.1")
+    ip_hash = hash_ip(probe)
+    assert get_int(key("issue-precheck", "register", "ip", ip_hash)) == 4
+    assert get_int(key("issue", "register", "ip", ip_hash)) == 2
+
+
+def test_cross_site_get_without_triad_headers_spends_no_issuance_quota(client, policy):
+    response = client.get(
+        "/api/triadcaptcha/challenge/",
+        {"action": "register"},
+        headers={"Origin": "https://untrusted.example"},
+    )
+
+    probe = RequestFactory().get("/", REMOTE_ADDR="127.0.0.1")
+    ip_hash = hash_ip(probe)
+    assert response.status_code == 400
+    assert get_int(key("issue-precheck", "register", "ip", ip_hash)) == 0
+    assert get_int(key("issue", "register", "ip", ip_hash)) == 0
+
+
+@pytest.mark.skipif(
+    os.environ.get("TRIADCAPTCHA_TEST_REAL_REDIS") != "1"
+    or os.environ.get("TRIADCAPTCHA_TEST_REAL_POSTGRES") != "1",
+    reason="requires real Redis and PostgreSQL services",
+)
+@pytest.mark.django_db(transaction=True)
+def test_concurrent_challenge_issuance_enforces_exact_ip_quota(settings, policy):
+    assert connection.vendor == "postgresql"
+    policy.challenge_issue_limit = 3
+    policy.save(update_fields=("challenge_issue_limit",))
+    attempts = [
+        create_attempt(
+            "register",
+            site_key_marker(settings.TRIADCAPTCHA_SITE_KEY),
+            "",
+            "",
+            90,
+        )
+        for _ in range(8)
+    ]
+    barrier = threading.Barrier(len(attempts))
+    result_lock = threading.Lock()
+    statuses: list[int] = []
+    failures: list[BaseException] = []
+
+    def issue(attempt: str) -> None:
+        try:
+            worker = Client()
+            barrier.wait()
+            response = worker.get(
+                "/api/triadcaptcha/challenge/",
+                {"action": "register"},
+                headers={
+                    "X-TriadCAPTCHA-Site-Key": settings.TRIADCAPTCHA_SITE_KEY,
+                    "X-TriadCAPTCHA-Attempt": attempt,
+                },
+            )
+            with result_lock:
+                statuses.append(response.status_code)
+        except BaseException as exc:
+            with result_lock:
+                failures.append(exc)
+
+    threads = [threading.Thread(target=issue, args=(attempt,)) for attempt in attempts]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert not failures
+    assert statuses.count(200) == policy.challenge_issue_limit
+    assert statuses.count(429) == len(attempts) - policy.challenge_issue_limit
 
 
 def test_invalid_challenge_request_is_classified_in_admin_audit(client, policy):
@@ -527,13 +647,15 @@ def test_same_action_proof_is_an_action_audience_across_endpoints(
 
 
 @pytest.mark.skipif(
-    os.environ.get("TRIADCAPTCHA_TEST_REAL_REDIS") != "1",
-    reason="requires a real Redis service",
+    os.environ.get("TRIADCAPTCHA_TEST_REAL_REDIS") != "1"
+    or os.environ.get("TRIADCAPTCHA_TEST_REAL_POSTGRES") != "1",
+    reason="requires real Redis and PostgreSQL services",
 )
 @pytest.mark.django_db(transaction=True)
 def test_concurrent_protected_endpoint_invokes_business_logic_once(
     client, settings, policy
 ):
+    assert connection.vendor == "postgresql"
     _, proof, attempt = issue_and_solve(client, settings)
     headers = {
         "X-TriadCAPTCHA-Site-Key": settings.TRIADCAPTCHA_SITE_KEY,
@@ -610,6 +732,61 @@ def test_real_redis_pool_exhaustion_returns_bounded_503(
         pool.release(leased)
         pool.disconnect()
 
+    assert time.monotonic() - started < 1
+    assert response.status_code == 503
+    assert get_business_invocations() == 0
+
+
+def test_nonresponding_redis_socket_times_out_and_never_invokes_business_logic(
+    client, policy, monkeypatch
+):
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    accepted = threading.Event()
+    release = threading.Event()
+
+    def hold_connection_open():
+        connection, _ = listener.accept()
+        accepted.set()
+        try:
+            release.wait()
+        finally:
+            connection.close()
+
+    server = threading.Thread(target=hold_connection_open)
+    server.start()
+    host, port = listener.getsockname()
+    bounded_client = redis_backend._client_for(
+        f"redis://{host}:{port}/0",
+        socket_timeout=0.05,
+        max_connections=1,
+        pool_timeout=0.05,
+    )
+    monkeypatch.setattr(redis_backend, "get_redis_client", lambda: bounded_client)
+    reset_business_invocations()
+
+    started = time.monotonic()
+    try:
+        response = client.post(
+            "/protected/",
+            data=json.dumps({"email": "one@example.test"}),
+            content_type="application/json",
+            headers={
+                "X-TriadCAPTCHA-Site-Key": "tc_site_test_public_identifier_123456789",
+                "X-TriadCAPTCHA-Action": "register",
+            },
+        )
+    finally:
+        release.set()
+        listener.close()
+        server.join(timeout=1)
+        bounded_client.connection_pool.disconnect()
+        redis_backend.clear_client_cache()
+
+    assert accepted.is_set()
+    assert not server.is_alive()
     assert time.monotonic() - started < 1
     assert response.status_code == 503
     assert get_business_invocations() == 0

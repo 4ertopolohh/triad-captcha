@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -116,6 +117,27 @@ def test_reference_nginx_enforces_browser_security_headers_without_demo_hsts() -
     assert "Strict-Transport-Security" not in headers
 
 
+def test_ci_runs_real_chromium_origin_cookie_and_csp_contracts() -> None:
+    workflow = read(".github/workflows/ci.yml")
+    browser_test = read("tests/browser/security-contract.spec.ts")
+    browser_lock = read("tests/browser/package-lock.json")
+
+    assert "playwright install --with-deps chromium" in workflow
+    assert "npm test --prefix tests/browser" in workflow
+    assert '"@playwright/test": "1.63.0"' in browser_lock
+    for contract in (
+        "securitypolicyviolation",
+        "workerCount",
+        "frame-ancestors",
+        "undeclaredConnectionRejected",
+        "same-site HTTPS",
+        "cross-site Lax",
+        "mode=none",
+        "redirect: 'error'",
+    ):
+        assert contract in browser_test
+
+
 def test_build_and_ci_inputs_are_immutable_and_demo_python_is_hash_locked() -> None:
     workflow = read(".github/workflows/ci.yml")
     compose = read("infra/docker-compose.yml")
@@ -124,6 +146,13 @@ def test_build_and_ci_inputs_are_immutable_and_demo_python_is_hash_locked() -> N
         read("infra/nginx/Dockerfile"),
     )
     lock = read("examples/django-react-demo/backend/requirements.lock")
+    ci_lock = read(".github/requirements-ci.lock")
+    django_locks = {
+        "42": read(".github/requirements-django42.lock"),
+        "52": read(".github/requirements-django52.lock"),
+        "60": read(".github/requirements-django60.lock"),
+        "61": read(".github/requirements-django61.lock"),
+    }
 
     action_refs = re.findall(r"uses:\s+[^\s@]+@([^\s#]+)", workflow)
     assert action_refs
@@ -137,8 +166,49 @@ def test_build_and_ci_inputs_are_immutable_and_demo_python_is_hash_locked() -> N
     )
     assert "--require-hashes" in dockerfiles[0]
     assert "--hash=sha256:" in lock
+    assert "--hash=sha256:" in ci_lock
+    assert all("--hash=sha256:" in lock for lock in django_locks.values())
+    assert "--require-hashes -r .github/requirements-ci.lock" in workflow
+    assert "./packages/django[test" not in workflow
+    assert workflow.count("--no-build-isolation -e ./packages/django") == 4
+    assert '--no-build-isolation -e "./packages/django"' in workflow
+    assert "python -m build --no-isolation" in workflow
+    assert "ignore-unfixed: true" not in workflow
+    assert "django==4.2.30" in django_locks["42"]
+    assert "django==5.2.17" in django_locks["52"]
+    assert "django==6.0.8" in django_locks["60"]
+    assert "django==6.1.1" in django_locks["61"]
+    assert "exceptiongroup==1.3.1 ; python_version < \"3.11\"" in ci_lock
+    assert "typing-extensions==4.15.0 ; python_version < \"3.13\"" in ci_lock
+    for conditional_dependency in (
+        "async-timeout==5.0.1",
+        "backports-tarfile==1.2.0",
+        "cffi==2.0.0",
+        "cryptography==50.0.1",
+        "importlib-metadata==9.0.1",
+        "jeepney==0.9.0",
+        "pycparser==3.0",
+        "secretstorage==3.5.0",
+        "zipp==4.1.0",
+    ):
+        assert conditional_dependency in ci_lock
+    assert 'pip install --no-deps "Django==' not in workflow
     assert not (ROOT / "examples/django-react-demo/backend/requirements.txt").exists()
     assert (ROOT / ".github/dependabot.yml").is_file()
+
+
+def test_security_audit_exceptions_are_explicit_owned_and_time_bounded() -> None:
+    policy = read(".github/security-audit-ignores.txt")
+    entries = [line for line in policy.splitlines() if line and not line.startswith("#")]
+
+    assert entries
+    for entry in entries:
+        advisory, owner, expiry, rationale = entry.split("|", 3)
+        assert re.fullmatch(r"PYSEC-\d{4}-\d+", advisory)
+        assert owner == "triadcaptcha-security-maintainers"
+        assert date.fromisoformat(expiry) > datetime.now(UTC).date()
+        assert "Django 4.2 legacy compatibility only" in rationale
+        assert "production preflight requires Django 5.2+" in rationale
 
 
 def test_release_version_and_tag_contracts_are_consistent() -> None:
