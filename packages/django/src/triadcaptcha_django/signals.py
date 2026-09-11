@@ -212,7 +212,7 @@ def set_context_cookie(response, cookie_value: str | None, request) -> None:
         max_age=config.context_cookie_max_age,
         httponly=True,
         secure=secure,
-        samesite="Lax",
+        samesite=config.context_cookie_samesite,
         path="/",
     )
 

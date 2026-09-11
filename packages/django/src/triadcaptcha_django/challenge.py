@@ -14,10 +14,16 @@ from typing import Any
 from altcha import Payload, create_challenge, verify_solution
 
 from .audit import AuditSignals, write_event
-from .conf import get_settings
+from .conf import get_settings, site_key_is_configured
 from .errors import ErrorCode, TriadCaptchaFailure
 from .models import ProtectedAction, SecurityEvent
-from .redis_backend import consume_challenge, increment, key, reserve_challenge
+from .redis_backend import (
+    consume_attempt_challenge,
+    get_attempt,
+    increment,
+    issue_attempt_challenge,
+    key,
+)
 from .signals import get_context_binding, hash_ip, normalize_user_agent
 from .site_keys import (
     accepted_site_key_markers,
@@ -27,6 +33,7 @@ from .site_keys import (
 )
 
 JTI_PATTERN = re.compile(r"^[A-Za-z0-9_-]{20,64}$")
+ATTEMPT_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,64}$")
 
 
 @dataclass(frozen=True)
@@ -77,17 +84,31 @@ def _payload_dict(payload: str) -> dict[str, Any]:
 
 def issue_challenge(request, policy: ProtectedAction) -> ChallengeEnvelope:
     supplied_site_key = request.headers.get("X-TriadCAPTCHA-Site-Key")
+    attempt_token = request.headers.get("X-TriadCAPTCHA-Attempt", "")
+    if not supplied_site_key or not site_key_is_configured(supplied_site_key):
+        raise TriadCaptchaFailure(ErrorCode.INVALID_PAYLOAD, internal_reason="site_key_malformed")
+    if not ATTEMPT_PATTERN.fullmatch(attempt_token):
+        raise TriadCaptchaFailure(ErrorCode.INVALID_PAYLOAD, internal_reason="attempt_malformed")
     ip_hash = hash_ip(request)
     window = policy.rate_window_seconds
-    ip_rate = increment(key("issue", policy.action, "ip", ip_hash), window)
+    ip_rate = increment(key("issue-precheck", policy.action, "ip", ip_hash), window)
     if ip_rate.count > policy.challenge_issue_limit:
         raise TriadCaptchaFailure(
             ErrorCode.RATE_LIMITED,
             retry_after=max(ip_rate.ttl, 1),
             internal_reason="challenge_issue_rate_limit",
         )
-    if not supplied_site_key or not site_key_is_accepted(supplied_site_key):
+    if not site_key_is_accepted(supplied_site_key):
         raise TriadCaptchaFailure(ErrorCode.INVALID_PAYLOAD, internal_reason="site_key_mismatch")
+    requested_site = site_key_marker(supplied_site_key)
+    attempt = get_attempt(attempt_token)
+    if (
+        attempt is None
+        or attempt.state != "pending"
+        or attempt.action != policy.action
+        or attempt.requested_site != requested_site
+    ):
+        raise TriadCaptchaFailure(ErrorCode.INVALID_PAYLOAD, internal_reason="attempt_mismatch")
 
     # Allocate a session/technical context only after the IP issuance ceiling has
     # passed. Otherwise a cookie-less flood could create an unbounded number of
@@ -97,11 +118,15 @@ def issue_challenge(request, policy: ProtectedAction) -> ChallengeEnvelope:
         raise TriadCaptchaFailure(
             ErrorCode.CONFIGURATION_ERROR, internal_reason="context_binding_unavailable"
         )
+    accepted_ip_rate = increment(key("issue", policy.action, "ip", ip_hash), window)
     session_rate = increment(key("issue", policy.action, "session", context.context_hash), window)
-    if session_rate.count > policy.challenge_issue_limit:
+    if (
+        accepted_ip_rate.count > policy.challenge_issue_limit
+        or session_rate.count > policy.challenge_issue_limit
+    ):
         raise TriadCaptchaFailure(
             ErrorCode.RATE_LIMITED,
-            retry_after=max(session_rate.ttl, 1),
+            retry_after=max(accepted_ip_rate.ttl, session_rate.ttl, 1),
             internal_reason="challenge_issue_rate_limit",
         )
 
@@ -111,9 +136,23 @@ def issue_challenge(request, policy: ProtectedAction) -> ChallengeEnvelope:
     expires_at = int(time.time()) + policy.challenge_ttl_seconds
     jti = secrets.token_urlsafe(24)
     marker = _marker(policy.action, context.context_hash, site_key_marker(site_key))
-    if not reserve_challenge(jti, marker, policy.challenge_ttl_seconds):
+    issued = issue_attempt_challenge(
+        attempt_token,
+        action=policy.action,
+        requested_site=requested_site,
+        context_hash=context.context_hash,
+        jti=jti,
+        marker=marker,
+        challenge_site=site_key_marker(site_key),
+        challenge_ttl=policy.challenge_ttl_seconds,
+        attempt_ttl=policy.challenge_ttl_seconds + 60,
+    )
+    if issued != 1:
         raise TriadCaptchaFailure(
-            ErrorCode.SERVICE_UNAVAILABLE, internal_reason="challenge_jti_collision"
+            ErrorCode.INVALID_PAYLOAD if issued in {0, -1} else ErrorCode.SERVICE_UNAVAILABLE,
+            internal_reason=(
+                "attempt_mismatch" if issued in {0, -1} else "challenge_jti_collision"
+            ),
         )
 
     counter = secrets.randbelow(policy.pow_max_counter - policy.pow_min_counter + 1)
@@ -156,6 +195,7 @@ def verify_and_consume(
     request,
     policy: ProtectedAction,
     payload: str,
+    attempt_token: str,
 ) -> None:
     raw = _payload_dict(payload)
     try:
@@ -235,7 +275,9 @@ def verify_and_consume(
         )
 
     marker = _marker(policy.action, context.context_hash, str(signed_site_key))
-    consume_result = consume_challenge(jti, marker, policy.challenge_ttl_seconds + 60)
+    consume_result = consume_attempt_challenge(
+        attempt_token, jti, marker, policy.challenge_ttl_seconds + 60
+    )
     if consume_result == 2:
         raise TriadCaptchaFailure(ErrorCode.CHALLENGE_REPLAYED, internal_reason="challenge_replay")
     if consume_result == 0:

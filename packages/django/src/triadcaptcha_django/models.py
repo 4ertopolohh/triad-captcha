@@ -104,6 +104,9 @@ class ProtectedAction(models.Model):
     challenge_issue_limit = models.PositiveIntegerField(
         default=10, validators=[MinValueValidator(1)]
     )
+    proof_retry_limit = models.PositiveSmallIntegerField(
+        default=3, validators=[MinValueValidator(1), MaxValueValidator(10)]
+    )
     temporary_block_seconds = models.PositiveIntegerField(
         default=900, validators=[MinValueValidator(30), MaxValueValidator(604800)]
     )
@@ -161,6 +164,13 @@ class SiteKeyVersion(models.Model):
 
     class Meta:
         ordering = ("-created_at",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=("status",),
+                condition=models.Q(status="active"),
+                name="tc_one_active_site_key",
+            )
+        ]
         verbose_name = "версия публичного ключа"
         verbose_name_plural = "Публичные ключи"
 
@@ -172,6 +182,8 @@ class SiteKeyVersion(models.Model):
     def rotate(cls, *, grace_period: timedelta = timedelta(days=7), note: str = ""):
         now = timezone.now()
         with transaction.atomic():
+            ProtectionConfiguration.objects.get_or_create(pk=1)
+            ProtectionConfiguration.objects.select_for_update().get(pk=1)
             cls.objects.select_for_update().filter(status=cls.Status.ACTIVE).update(
                 status=cls.Status.GRACE, expires_at=now + grace_period
             )

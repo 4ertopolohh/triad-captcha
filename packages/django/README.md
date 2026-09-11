@@ -20,3 +20,11 @@ system check reports `triadcaptcha.W002` instead of blocking initial migrations.
 Supported compatibility range: Python 3.10–3.14 and Django 4.2–6.1. Django 5.2 LTS or 6.1 is the
 recommended production baseline. Django 4.2 is retained as a legacy compatibility lane but no
 longer receives upstream security fixes; applications should migrate to 5.2 LTS or newer.
+
+Version 0.2 introduces a short-lived logical-attempt handshake. A challenged 428
+contains `error.attempt`; clients must send it as `X-TriadCAPTCHA-Attempt` on the
+challenge request and proof retry. Deploy the 0.2 Django and React packages
+together. Production startup should run `check_triadcaptcha_production` after
+migrations; Redis pool size/queue timeout and fallback-cookie SameSite mode are
+configurable through the documented `TRIADCAPTCHA_REDIS_*` and
+`TRIADCAPTCHA_CONTEXT_COOKIE_*` settings.

@@ -8,7 +8,7 @@ from django.conf import settings as django_settings
 from django.http.request import RawPostDataException
 
 from .audit import write_event
-from .challenge import verify_and_consume
+from .challenge import ATTEMPT_PATTERN, verify_and_consume
 from .conf import (
     get_settings,
     redis_url_is_valid,
@@ -17,17 +17,27 @@ from .conf import (
 )
 from .errors import ErrorCode, TriadCaptchaFailure
 from .models import ProtectedAction, ProtectionConfiguration, SecurityEvent
-from .redis_backend import RedisUnavailable, delete, increment
+from .redis_backend import (
+    RedisUnavailable,
+    attempt_was_used,
+    closed_attempt_ttl,
+    create_attempt,
+    delete,
+    get_attempt,
+    increment,
+    record_attempt_failure,
+)
 from .risk import (
     RequestSignals,
     assess_risk,
+    check_authoritative_blocks,
     collect_signals,
     create_temporary_block,
     failure_keys,
     replay_key,
 )
-from .signals import decode_metadata_header, sanitize_metadata, validate_action
-from .site_keys import site_key_is_accepted
+from .signals import decode_metadata_header, get_context_binding, sanitize_metadata, validate_action
+from .site_keys import site_key_is_accepted, site_key_marker
 from .types import EvaluationResult, allow, block, challenge_required
 
 
@@ -168,6 +178,157 @@ def evaluate(
         safe_metadata = _extract_metadata(request, metadata)
         supplied_payload = _extract_payload(request, payload)
         signals = collect_signals(request, identity)
+
+        supplied_attempt = request.headers.get("X-TriadCAPTCHA-Attempt", "")
+        if supplied_payload:
+            if not ATTEMPT_PATTERN.fullmatch(supplied_attempt):
+                return _result_with_audit(
+                    block(ErrorCode.INVALID_PAYLOAD, reasons=("attempt_malformed",)),
+                    action=action,
+                    signals=signals,
+                    metadata=safe_metadata,
+                )
+            try:
+                attempt = get_attempt(supplied_attempt)
+                if attempt is None and attempt_was_used(supplied_attempt):
+                    increment(
+                        replay_key(policy, signals),
+                        max(600, policy.rate_window_seconds * 10),
+                    )
+                    return _result_with_audit(
+                        block(ErrorCode.CHALLENGE_REPLAYED, reasons=("challenge_replay",)),
+                        action=action,
+                        signals=signals,
+                        metadata=safe_metadata,
+                    )
+                closed_ttl = closed_attempt_ttl(supplied_attempt)
+                if attempt is None and closed_ttl:
+                    return _result_with_audit(
+                        block(
+                            ErrorCode.RATE_LIMITED,
+                            retry_after=closed_ttl,
+                            reasons=("invalid_proof_limit",),
+                        ),
+                        action=action,
+                        signals=signals,
+                        metadata=safe_metadata,
+                    )
+            except RedisUnavailable:
+                return _result_with_audit(
+                    block(ErrorCode.SERVICE_UNAVAILABLE, reasons=("attempt_state_unavailable",)),
+                    action=action,
+                    signals=signals,
+                    metadata=safe_metadata,
+                )
+            context_hash = get_context_binding(request, create=False).context_hash
+            requested_site = site_key_marker(request.headers["X-TriadCAPTCHA-Site-Key"])
+            if (
+                attempt is None
+                or attempt.state != "issued"
+                or attempt.action != action
+                or attempt.requested_site != requested_site
+                or attempt.identity != signals.identity_hash
+                or not context_hash
+                or attempt.context != context_hash
+            ):
+                return _result_with_audit(
+                    block(ErrorCode.INVALID_PAYLOAD, reasons=("attempt_binding_mismatch",)),
+                    action=action,
+                    signals=signals,
+                    metadata=safe_metadata,
+                )
+            try:
+                authoritative = check_authoritative_blocks(policy, signals)
+            except RedisUnavailable:
+                return _result_with_audit(
+                    block(ErrorCode.SERVICE_UNAVAILABLE, reasons=("block_state_unavailable",)),
+                    action=action,
+                    signals=signals,
+                    metadata=safe_metadata,
+                )
+            if authoritative.should_block:
+                return _result_with_audit(
+                    block(
+                        ErrorCode.BLOCKED,
+                        retry_after=authoritative.retry_after,
+                        reasons=authoritative.reasons,
+                    ),
+                    action=action,
+                    signals=signals,
+                    metadata=safe_metadata,
+                )
+            try:
+                verify_and_consume(request, policy, supplied_payload, supplied_attempt)
+            except RedisUnavailable:
+                return _result_with_audit(
+                    block(
+                        ErrorCode.SERVICE_UNAVAILABLE,
+                        reasons=("challenge_consume_unavailable",),
+                    ),
+                    action=action,
+                    signals=signals,
+                    metadata=safe_metadata,
+                )
+            except TriadCaptchaFailure as exc:
+                if exc.public_error.code is ErrorCode.CHALLENGE_REPLAYED:
+                    try:
+                        increment(
+                            replay_key(policy, signals), max(600, policy.rate_window_seconds * 10)
+                        )
+                    except RedisUnavailable:
+                        pass
+                try:
+                    _, closed = record_attempt_failure(
+                        supplied_attempt,
+                        attempt.jti,
+                        policy.proof_retry_limit,
+                        policy.challenge_ttl_seconds + 60,
+                    )
+                except RedisUnavailable:
+                    return _result_with_audit(
+                        block(
+                            ErrorCode.SERVICE_UNAVAILABLE,
+                            reasons=("invalid_proof_accounting_unavailable",),
+                        ),
+                        action=action,
+                        signals=signals,
+                        metadata=safe_metadata,
+                    )
+                if closed:
+                    return _result_with_audit(
+                        block(
+                            ErrorCode.RATE_LIMITED,
+                            retry_after=policy.challenge_ttl_seconds + 60,
+                            reasons=("invalid_proof_limit",),
+                        ),
+                        action=action,
+                        signals=signals,
+                        metadata=safe_metadata,
+                    )
+                return _result_with_audit(
+                    block(
+                        exc.public_error.code,
+                        status=exc.public_error.status,
+                        retry_after=exc.public_error.retry_after,
+                        reasons=(exc.internal_reason,),
+                    ),
+                    action=action,
+                    signals=signals,
+                    metadata=safe_metadata,
+                )
+            return _result_with_audit(
+                allow(reasons=("challenge_verified",)),
+                action=action,
+                signals=signals,
+                metadata=safe_metadata,
+            )
+        if supplied_attempt:
+            return _result_with_audit(
+                block(ErrorCode.INVALID_PAYLOAD, reasons=("unexpected_attempt",)),
+                action=action,
+                signals=signals,
+                metadata=safe_metadata,
+            )
         try:
             assessment = assess_risk(policy, signals, safe_metadata)
         except RedisUnavailable:
@@ -218,53 +379,28 @@ def evaluate(
                 metadata=safe_metadata,
             )
 
-        if supplied_payload:
+        if assessment.score >= policy.challenge_threshold:
             try:
-                verify_and_consume(request, policy, supplied_payload)
+                attempt_token = create_attempt(
+                    action,
+                    site_key_marker(request.headers["X-TriadCAPTCHA-Site-Key"]),
+                    signals.identity_hash,
+                    signals.session_hash,
+                    policy.challenge_ttl_seconds + 60,
+                )
             except RedisUnavailable:
                 return _result_with_audit(
-                    block(
-                        ErrorCode.SERVICE_UNAVAILABLE,
-                        risk_score=assessment.score,
-                        reasons=assessment.reasons + ("challenge_consume_unavailable",),
-                    ),
-                    action=action,
-                    signals=signals,
-                    metadata=safe_metadata,
-                )
-            except TriadCaptchaFailure as exc:
-                if exc.public_error.code is ErrorCode.CHALLENGE_REPLAYED:
-                    try:
-                        increment(
-                            replay_key(policy, signals), max(600, policy.rate_window_seconds * 10)
-                        )
-                    except RedisUnavailable:
-                        pass
-                return _result_with_audit(
-                    block(
-                        exc.public_error.code,
-                        status=exc.public_error.status,
-                        retry_after=exc.public_error.retry_after,
-                        risk_score=assessment.score,
-                        reasons=assessment.reasons + (exc.internal_reason,),
-                    ),
+                    block(ErrorCode.SERVICE_UNAVAILABLE, reasons=("attempt_store_unavailable",)),
                     action=action,
                     signals=signals,
                     metadata=safe_metadata,
                 )
             return _result_with_audit(
-                allow(
+                challenge_required(
+                    attempt=attempt_token,
                     risk_score=assessment.score,
-                    reasons=assessment.reasons + ("challenge_verified",),
+                    reasons=assessment.reasons,
                 ),
-                action=action,
-                signals=signals,
-                metadata=safe_metadata,
-            )
-
-        if assessment.score >= policy.challenge_threshold:
-            return _result_with_audit(
-                challenge_required(risk_score=assessment.score, reasons=assessment.reasons),
                 action=action,
                 signals=signals,
                 metadata=safe_metadata,

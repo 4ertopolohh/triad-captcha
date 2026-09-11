@@ -12,6 +12,7 @@ or return explanatory rule details to the browser.
 | `X-TriadCAPTCHA-Action` | Stable action name such as `register` |
 | `X-TriadCAPTCHA-Metadata` | Optional base64url UTF-8 JSON of allowlisted weak signals |
 | `X-TriadCAPTCHA-Payload` | Base64 ALTCHA v2 payload on the single retry |
+| `X-TriadCAPTCHA-Attempt` | Opaque short-lived token from the server's 428 response |
 
 Metadata is optional. The supported keys are `form_fill_ms`, `focus_count`,
 `input_count`, `pointer_count`, `keyboard_count`, `page_visible`,
@@ -24,6 +25,7 @@ verification code in this header.
 ```http
 GET /api/triadcaptcha/challenge/?action=register
 X-TriadCAPTCHA-Site-Key: tc_live_public_identifier
+X-TriadCAPTCHA-Attempt: opaque_attempt_from_428
 ```
 
 The request uses the application's normal session cookie. Cross-origin API
@@ -57,6 +59,11 @@ than alter or interpret it.
 }
 ```
 
+`ANTIBOT_CHALLENGE_REQUIRED` additionally carries an opaque `error.attempt`.
+Clients must return it on the challenge request and proof retry; it is not a
+reusable authorization token. A challenged flow requires backend and SDK 0.2.x
+to be deployed together.
+
 `retry_after` is included only when a safe, useful delay is known and is mirrored
 in the HTTP `Retry-After` header. The stable mapping is:
 
@@ -79,6 +86,9 @@ admin audit. Consumers should switch on `code`, not English text or status alone
 
 The SDK retries only an original request that returned
 `ANTIBOT_CHALLENGE_REQUIRED`, and only once. It does not retry blocks, rate limits,
-service failures, or arbitrary 428 responses. Callers should use an idempotency key
+service failures, 428 responses without a valid attempt, or arbitrary 428 responses.
+The original request and proof retry are one logical business attempt; the retry
+rechecks authoritative blocks but does not increment the original rate counters.
+Callers should use an idempotency key
 for business operations whose network result may be ambiguous; TriadCAPTCHA cannot
 make a non-idempotent application endpoint idempotent.

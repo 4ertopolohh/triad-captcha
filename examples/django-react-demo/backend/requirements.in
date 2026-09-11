@@ -1,0 +1,8 @@
+# Keep these compatible ranges aligned with the demo and library support policy.
+Django>=5.2,<6.2
+altcha>=2.1.0,<3
+redis>=6,<9
+dj-database-url>=2.3,<4
+gunicorn>=23,<24
+psycopg[binary]>=3.2,<4
+whitenoise>=6.8,<7

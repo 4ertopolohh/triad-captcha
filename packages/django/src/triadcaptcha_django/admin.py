@@ -187,6 +187,7 @@ class ProtectedActionAdmin(SuperuserManagedAdmin):
                 "fields": (
                     "challenge_ttl_seconds",
                     "challenge_issue_limit",
+                    "proof_retry_limit",
                     "temporary_block_seconds",
                     "pow_algorithm",
                     "pow_cost",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 import threading
@@ -50,14 +51,22 @@ def _dedupe_token(
     reasons: tuple[str, ...] | list[str],
     signals: AuditSignals,
 ) -> str:
-    binding = (
-        signals.ip_hash
-        or signals.ip_identity_hash
-        or signals.session_hash
-        or signals.identity_hash
-        or "unbound"
+    material = json.dumps(
+        {
+            "action": action,
+            "decision": decision,
+            "identity_hmac": signals.identity_hash,
+            "ip_hmac": signals.ip_hash,
+            "ip_identity_hmac": signals.ip_identity_hash,
+            "public_code": public_code,
+            "reasons": sorted(reasons),
+            "session_hmac": signals.session_hash,
+            "user_agent_family": signals.user_agent_family,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
     )
-    material = "\x1f".join((action, decision, public_code, *reasons, binding))
     return sha256(material.encode("utf-8")).hexdigest()[:32]
 
 

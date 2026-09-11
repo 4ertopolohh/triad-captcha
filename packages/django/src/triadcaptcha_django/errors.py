@@ -35,6 +35,7 @@ class PublicError:
     code: ErrorCode
     status: int | None = None
     retry_after: int | None = None
+    attempt: str | None = None
 
     @property
     def http_status(self) -> int:
@@ -44,6 +45,8 @@ class PublicError:
         data: dict[str, Any] = {"code": self.code.value}
         if self.retry_after is not None:
             data["retry_after"] = max(0, int(self.retry_after))
+        if self.attempt is not None:
+            data["attempt"] = self.attempt
         return {"error": data}
 
     def response(self) -> JsonResponse:

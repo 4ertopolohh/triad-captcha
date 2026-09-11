@@ -8,6 +8,7 @@ After installing the app and setting its environment variables:
 python manage.py migrate
 python manage.py bootstrap_triadcaptcha --actions register login send_code password_reset comments
 python manage.py check --deploy
+python manage.py check_triadcaptcha_production
 ```
 
 The bootstrap command is idempotent. It creates the singleton configuration,
@@ -18,6 +19,10 @@ Django system checks reject short/equal HMAC secrets, an invalid Redis scheme,
 bad proxy networks, a missing public site key, and development mode combined with
 `DEBUG=False`.
 
+The production preflight requires Django 5.2 or newer and rejects every enabled
+`fail_closed=False` action unless its name is explicitly repeated with
+`--allow-fail-open`. An approval is an application risk decision, not a default.
+
 ## Audit retention
 
 Set the retention period in **TriadCAPTCHA → Protection configuration**, then run
@@ -25,13 +30,15 @@ this daily from the host scheduler:
 
 ```bash
 python manage.py cleanup_triadcaptcha --dry-run
-python manage.py cleanup_triadcaptcha
+python manage.py cleanup_triadcaptcha --batch-size 1000
 ```
 
 The command removes expired audit events, deletes inactive block rules after the
 same retention window, and deactivates expired active rules. Active permanent rules
 remain until an administrator unblocks them. Redis counters and challenge state
 expire independently through TTLs.
+Each mutation is committed in an ordered primary-key batch (`1..10000`) to bound
+transaction duration and WAL pressure.
 
 ## Public site-key rotation
 
@@ -72,11 +79,23 @@ guarantee. This durability choice costs write throughput/latency; benchmark it a
 use an equivalently durable HA Redis design before changing it. PostgreSQL remains
 the source for long-term audit and manual/automatic block history.
 
+`TRIADCAPTCHA_REDIS_MAX_CONNECTIONS` defaults to 32 and
+`TRIADCAPTCHA_REDIS_POOL_TIMEOUT` to 0.25 seconds per backend process. Capacity
+planning must use `processes × max_connections` and leave room below Redis
+`maxclients`; pool exhaustion intentionally returns 503 rather than growing
+connections without bound.
+
 ## Container/image pinning
 
-The example pins image release lines for readable updates. A production owner
-should additionally pin reviewed image digests, scan them, test backups/restores,
+The example pins reviewed multi-architecture image digests while retaining release
+tags for readable updates. A production owner must scan updated digests, test backups/restores,
 terminate TLS, and set CPU/memory limits appropriate to local traffic. Run
 `docker compose --env-file .env -f infra/docker-compose.yml config --quiet` before
 every deployment. Do not log or archive the full rendered configuration because it
 contains expanded database and HMAC secrets.
+
+The bundled listener is loopback-only HTTP and deliberately omits HSTS. Production
+must terminate TLS at a separately reviewed edge; enable HSTS there only after all
+covered hosts are HTTPS. Isolate `/admin/` behind VPN, private listener, or an
+identity-aware proxy with MFA/SSO. The demo's admin-login rate limit is only a
+coarse ceiling, not an access boundary.

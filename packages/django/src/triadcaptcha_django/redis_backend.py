@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -46,28 +47,130 @@ end
 return 0
 """
 
+CREATE_ATTEMPT_SCRIPT = """
+if redis.call('EXISTS', KEYS[1]) == 1 then
+  return 0
+end
+redis.call('HSET', KEYS[1],
+  'state', 'pending',
+  'action', ARGV[1],
+  'requested_site', ARGV[2],
+  'identity', ARGV[3],
+  'context', ARGV[4],
+  'failures', '0')
+redis.call('EXPIRE', KEYS[1], ARGV[5])
+return 1
+"""
+
+ISSUE_ATTEMPT_SCRIPT = """
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  return 0
+end
+if redis.call('HGET', KEYS[1], 'state') ~= 'pending'
+  or redis.call('HGET', KEYS[1], 'action') ~= ARGV[1]
+  or redis.call('HGET', KEYS[1], 'requested_site') ~= ARGV[2] then
+  return -1
+end
+local old_context = redis.call('HGET', KEYS[1], 'context') or ''
+if old_context ~= '' and old_context ~= ARGV[3] then
+  return -1
+end
+if redis.call('SET', KEYS[2], ARGV[5], 'NX', 'EX', ARGV[6]) == false then
+  return -2
+end
+redis.call('HSET', KEYS[1],
+  'state', 'issued',
+  'context', ARGV[3],
+  'jti', ARGV[4],
+  'challenge_site', ARGV[7])
+redis.call('EXPIRE', KEYS[1], ARGV[8])
+return 1
+"""
+
+CONSUME_ATTEMPT_SCRIPT = """
+if redis.call('EXISTS', KEYS[4]) == 1 or redis.call('EXISTS', KEYS[3]) == 1 then
+  return 2
+end
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  return 0
+end
+if redis.call('HGET', KEYS[1], 'state') ~= 'issued'
+  or redis.call('HGET', KEYS[1], 'jti') ~= ARGV[1] then
+  return -1
+end
+local value = redis.call('GET', KEYS[2])
+if not value then
+  return 0
+end
+if value ~= ARGV[2] then
+  return -1
+end
+redis.call('DEL', KEYS[1], KEYS[2])
+redis.call('SET', KEYS[3], '1', 'EX', ARGV[3])
+redis.call('SET', KEYS[4], '1', 'EX', ARGV[3])
+return 1
+"""
+
+RECORD_ATTEMPT_FAILURE_SCRIPT = """
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  return {0, 0}
+end
+local failures = tonumber(redis.call('HGET', KEYS[1], 'failures') or '0')
+local limit = tonumber(ARGV[1])
+if failures < limit then
+  failures = failures + 1
+  redis.call('HSET', KEYS[1], 'failures', failures)
+end
+if failures >= limit then
+  redis.call('DEL', KEYS[1], KEYS[2])
+  redis.call('SET', KEYS[3], 'invalid-limit', 'EX', ARGV[2])
+  return {failures, 1}
+end
+return {failures, 0}
+"""
+
 
 class RedisUnavailable(RuntimeError):
     pass
 
 
 @lru_cache(maxsize=4)
-def _client_for(url: str, timeout: float):
-    return redis.Redis.from_url(
+def _client_for(
+    url: str,
+    socket_timeout: float,
+    max_connections: int,
+    pool_timeout: float,
+):
+    pool = redis.BlockingConnectionPool.from_url(
         url,
+        max_connections=max(1, max_connections),
+        timeout=max(0.01, pool_timeout),
         decode_responses=True,
-        socket_connect_timeout=timeout,
-        socket_timeout=timeout,
+        socket_connect_timeout=socket_timeout,
+        socket_timeout=socket_timeout,
         health_check_interval=30,
     )
+    _CLIENT_POOLS.add(pool)
+    return redis.Redis(connection_pool=pool)
+
+
+_CLIENT_POOLS: set[redis.BlockingConnectionPool] = set()
 
 
 def get_redis_client():
     config = get_settings()
-    return _client_for(config.redis_url, config.redis_socket_timeout)
+    return _client_for(
+        config.redis_url,
+        config.redis_socket_timeout,
+        config.redis_max_connections,
+        config.redis_pool_timeout,
+    )
 
 
 def clear_client_cache() -> None:
+    for pool in tuple(_CLIENT_POOLS):
+        pool.disconnect()
+    _CLIENT_POOLS.clear()
     _client_for.cache_clear()
 
 
@@ -75,6 +178,18 @@ def clear_client_cache() -> None:
 class RateValue:
     count: int
     ttl: int
+
+
+@dataclass(frozen=True)
+class AttemptState:
+    state: str
+    action: str
+    requested_site: str
+    identity: str
+    context: str
+    jti: str = ""
+    challenge_site: str = ""
+    failures: int = 0
 
 
 def key(*parts: object) -> str:
@@ -148,6 +263,140 @@ def consume_challenge(jti: str, marker: str, tombstone_ttl: int) -> int:
         )
     except RedisError as exc:
         raise RedisUnavailable("redis atomic challenge consume failed") from exc
+
+
+def create_attempt(
+    action: str,
+    requested_site: str,
+    identity_hash: str,
+    context_hash: str,
+    ttl: int,
+) -> str:
+    try:
+        client = get_redis_client()
+        for _ in range(3):
+            token = secrets.token_urlsafe(32)
+            created = client.eval(
+                CREATE_ATTEMPT_SCRIPT,
+                1,
+                key("attempt", token),
+                action,
+                requested_site,
+                identity_hash,
+                context_hash,
+                max(1, int(ttl)),
+            )
+            if int(created) == 1:
+                return token
+        raise RedisUnavailable("redis attempt token collision")
+    except RedisError as exc:
+        raise RedisUnavailable("redis attempt creation failed") from exc
+
+
+def get_attempt(token: str) -> AttemptState | None:
+    try:
+        data = get_redis_client().hgetall(key("attempt", token))
+        if not data:
+            return None
+        return AttemptState(
+            state=str(data.get("state", "")),
+            action=str(data.get("action", "")),
+            requested_site=str(data.get("requested_site", "")),
+            identity=str(data.get("identity", "")),
+            context=str(data.get("context", "")),
+            jti=str(data.get("jti", "")),
+            challenge_site=str(data.get("challenge_site", "")),
+            failures=int(data.get("failures", 0)),
+        )
+    except (RedisError, TypeError, ValueError) as exc:
+        raise RedisUnavailable("redis attempt read failed") from exc
+
+
+def attempt_was_used(token: str) -> bool:
+    try:
+        return bool(get_redis_client().exists(key("attempt-used", token)))
+    except RedisError as exc:
+        raise RedisUnavailable("redis attempt tombstone read failed") from exc
+
+
+def closed_attempt_ttl(token: str) -> int:
+    try:
+        ttl = get_redis_client().ttl(key("attempt-closed", token))
+        return max(0, int(ttl))
+    except (RedisError, TypeError, ValueError) as exc:
+        raise RedisUnavailable("redis closed attempt read failed") from exc
+
+
+def record_attempt_failure(
+    token: str, jti: str, limit: int, tombstone_ttl: int
+) -> tuple[int, bool]:
+    try:
+        failures, closed = get_redis_client().eval(
+            RECORD_ATTEMPT_FAILURE_SCRIPT,
+            3,
+            key("attempt", token),
+            key("challenge-v2", jti),
+            key("attempt-closed", token),
+            max(1, int(limit)),
+            max(1, int(tombstone_ttl)),
+        )
+        return int(failures), bool(closed)
+    except (RedisError, TypeError, ValueError) as exc:
+        raise RedisUnavailable("redis attempt failure accounting failed") from exc
+
+
+def issue_attempt_challenge(
+    token: str,
+    *,
+    action: str,
+    requested_site: str,
+    context_hash: str,
+    jti: str,
+    marker: str,
+    challenge_site: str,
+    challenge_ttl: int,
+    attempt_ttl: int,
+) -> int:
+    try:
+        return int(
+            get_redis_client().eval(
+                ISSUE_ATTEMPT_SCRIPT,
+                2,
+                key("attempt", token),
+                key("challenge-v2", jti),
+                action,
+                requested_site,
+                context_hash,
+                jti,
+                marker,
+                max(1, int(challenge_ttl)),
+                challenge_site,
+                max(1, int(attempt_ttl)),
+            )
+        )
+    except RedisError as exc:
+        raise RedisUnavailable("redis attempt challenge issuance failed") from exc
+
+
+def consume_attempt_challenge(
+    token: str, jti: str, marker: str, tombstone_ttl: int
+) -> int:
+    try:
+        return int(
+            get_redis_client().eval(
+                CONSUME_ATTEMPT_SCRIPT,
+                4,
+                key("attempt", token),
+                key("challenge-v2", jti),
+                key("challenge-used-v2", jti),
+                key("attempt-used", token),
+                jti,
+                marker,
+                max(1, int(tombstone_ttl)),
+            )
+        )
+    except RedisError as exc:
+        raise RedisUnavailable("redis atomic attempt consume failed") from exc
 
 
 def set_temporary_block(scope: str, value_hash: str, action: str, ttl: int) -> None:

@@ -2,7 +2,7 @@ name: triadcaptcha
 
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-triadcaptcha_demo}
@@ -19,9 +19,14 @@ services:
     networks: [backend]
     security_opt:
       - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    cpus: ${POSTGRES_CPUS:-1.0}
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:-512m}
+    pids_limit: ${POSTGRES_PIDS_LIMIT:-128}
 
   redis:
-    image: redis:7.4-alpine
+    image: redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
     restart: unless-stopped
     command:
       - redis-server
@@ -33,6 +38,8 @@ services:
       - --save
       - "60"
       - "1000"
+      - --maxmemory-policy
+      - noeviction
     volumes:
       # AOF preserves unexpired replay/rate-limit keys across routine restarts.
       - redis_data:/data
@@ -45,6 +52,11 @@ services:
     networks: [backend]
     security_opt:
       - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    cpus: ${REDIS_CPUS:-0.5}
+    mem_limit: ${REDIS_MEMORY_LIMIT:-256m}
+    pids_limit: ${REDIS_PIDS_LIMIT:-128}
     # Deliberately no `ports`: Redis is reachable only on the backend network.
 
   backend:
@@ -58,10 +70,14 @@ services:
       # The bundled demo is served on plain http://localhost. Set this to 1
       # only when a trusted TLS edge supplies the effective HTTPS scheme.
       DJANGO_SECURE_COOKIES: ${DJANGO_SECURE_COOKIES:-0}
+      DJANGO_STATIC_ROOT: /tmp/staticfiles
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
       DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-http://localhost:8080}
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       TRIADCAPTCHA_REDIS_URL: ${TRIADCAPTCHA_REDIS_URL:?TRIADCAPTCHA_REDIS_URL is required}
+      TRIADCAPTCHA_REDIS_MAX_CONNECTIONS: ${TRIADCAPTCHA_REDIS_MAX_CONNECTIONS:-32}
+      TRIADCAPTCHA_REDIS_POOL_TIMEOUT: ${TRIADCAPTCHA_REDIS_POOL_TIMEOUT:-0.25}
+      TRIADCAPTCHA_CONTEXT_COOKIE_SAMESITE: ${TRIADCAPTCHA_CONTEXT_COOKIE_SAMESITE:-Lax}
       TRIADCAPTCHA_SITE_KEY: ${TRIADCAPTCHA_SITE_KEY:?TRIADCAPTCHA_SITE_KEY is required}
       TRIADCAPTCHA_HMAC_SECRET: ${TRIADCAPTCHA_HMAC_SECRET:?TRIADCAPTCHA_HMAC_SECRET is required}
       TRIADCAPTCHA_IDENTIFIER_HMAC_SECRET: ${TRIADCAPTCHA_IDENTIFIER_HMAC_SECRET:?TRIADCAPTCHA_IDENTIFIER_HMAC_SECRET is required}
@@ -82,6 +98,13 @@ services:
     networks: [backend]
     security_opt:
       - no-new-privileges:true
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp
+    cpus: ${BACKEND_CPUS:-1.0}
+    mem_limit: ${BACKEND_MEMORY_LIMIT:-512m}
+    pids_limit: ${BACKEND_PIDS_LIMIT:-256}
 
   nginx:
     build:
@@ -94,7 +117,7 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "${HTTP_PORT:-8080}:8080"
+      - "127.0.0.1:${HTTP_PORT:-8080}:8080"
     networks: [backend]
     read_only: true
     tmpfs:
@@ -103,6 +126,10 @@ services:
       - /tmp
     security_opt:
       - no-new-privileges:true
+    cap_drop: [ALL]
+    cpus: ${NGINX_CPUS:-0.5}
+    mem_limit: ${NGINX_MEMORY_LIMIT:-128m}
+    pids_limit: ${NGINX_PIDS_LIMIT:-128}
 
 networks:
   backend:

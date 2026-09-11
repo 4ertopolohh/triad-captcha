@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from types import SimpleNamespace
 
 import pytest
 from django.test import RequestFactory, override_settings
@@ -11,9 +12,13 @@ from triadcaptcha_django import redis_backend
 from triadcaptcha_django import service as service_module
 from triadcaptcha_django.errors import ErrorCode
 from triadcaptcha_django.models import BlockRule, ProtectionConfiguration, SecurityEvent
+from triadcaptcha_django.redis_backend import AttemptState
 from triadcaptcha_django.service import evaluate, record_outcome
-from triadcaptcha_django.signals import hash_identity, hash_ip
+from triadcaptcha_django.signals import get_context_binding, hash_identity, hash_ip
+from triadcaptcha_django.site_keys import site_key_marker
 from triadcaptcha_django.types import Decision
+
+from .urls import get_business_invocations, reset_business_invocations
 
 pytestmark = pytest.mark.django_db
 
@@ -160,7 +165,9 @@ def test_supplied_proof_never_fails_open(policy, monkeypatch):
             raise ConnectionError("offline")
 
     monkeypatch.setattr(redis_backend, "get_redis_client", lambda: BrokenRedis())
-    result = evaluate(_request(), "register", payload="bogus-proof")
+    request = _request()
+    request.META["HTTP_X_TRIADCAPTCHA_ATTEMPT"] = "a" * 32
+    result = evaluate(request, "register", payload="bogus-proof")
     assert result.code == ErrorCode.SERVICE_UNAVAILABLE.value
 
 
@@ -168,8 +175,32 @@ def test_consume_outage_after_risk_evaluation_is_classified(policy, monkeypatch)
     def unavailable(*args, **kwargs):
         raise redis_backend.RedisUnavailable("offline during consume")
 
+    request = _request()
+    binding = get_context_binding(request, create=True)
+    request.COOKIES["triadcaptcha_context"] = binding.cookie_value
+    attempt_token = "a" * 32
+    request.META["HTTP_X_TRIADCAPTCHA_ATTEMPT"] = attempt_token
+    monkeypatch.setattr(
+        service_module,
+        "get_attempt",
+        lambda token: AttemptState(
+            state="issued",
+            action="register",
+            requested_site=site_key_marker(
+                request.META["HTTP_X_TRIADCAPTCHA_SITE_KEY"]
+            ),
+            identity="",
+            context=binding.context_hash,
+            jti="test-jti",
+        ),
+    )
+    monkeypatch.setattr(
+        service_module,
+        "check_authoritative_blocks",
+        lambda *args: SimpleNamespace(should_block=False),
+    )
     monkeypatch.setattr(service_module, "verify_and_consume", unavailable)
-    result = evaluate(_request(), "register", payload="syntactically-deferred")
+    result = evaluate(request, "register", payload="syntactically-deferred")
     assert result.code == ErrorCode.SERVICE_UNAVAILABLE.value
     assert "challenge_consume_unavailable" in result.reasons
 
@@ -186,6 +217,53 @@ def test_lone_surrogate_payload_maps_to_public_invalid_payload(client, settings,
     )
     assert response.status_code == 400
     assert response.json()["error"]["code"] == ErrorCode.INVALID_PAYLOAD.value
+
+
+@pytest.mark.parametrize(
+    "proof",
+    [None, True, False, 0, 1.5, [], {}, "", "not-base64", "A" * 20000],
+)
+def test_proof_input_corpus_never_reaches_business_logic(
+    client, settings, policy, proof
+):
+    policy.base_risk_score = policy.challenge_threshold
+    policy.save(update_fields=("base_risk_score",))
+    reset_business_invocations()
+    response = client.post(
+        "/protected/",
+        data=json.dumps({"email": "person@example.test", "_triadcaptcha": proof}),
+        content_type="application/json",
+        headers={
+            "X-TriadCAPTCHA-Site-Key": settings.TRIADCAPTCHA_SITE_KEY,
+            "X-TriadCAPTCHA-Action": "register",
+        },
+    )
+
+    assert response.status_code in {400, 428}
+    assert get_business_invocations() == 0
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    ["%%%", "bnVsbA", "W10", "MQ", "A" * 5000],
+)
+def test_metadata_input_corpus_never_reaches_business_logic(
+    client, settings, policy, metadata
+):
+    reset_business_invocations()
+    response = client.post(
+        "/protected/",
+        data=json.dumps({"email": "person@example.test"}),
+        content_type="application/json",
+        headers={
+            "X-TriadCAPTCHA-Site-Key": settings.TRIADCAPTCHA_SITE_KEY,
+            "X-TriadCAPTCHA-Action": "register",
+            "X-TriadCAPTCHA-Metadata": metadata,
+        },
+    )
+
+    assert response.status_code == 400
+    assert get_business_invocations() == 0
 
 
 def test_untrusted_forwarded_for_is_ignored(policy, settings):

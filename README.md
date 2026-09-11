@@ -77,19 +77,19 @@ validation as shown above.
 ## Install from a private Git repository
 
 No package has been published and this project performs no push. After a maintainer
-reviews a private remote and creates local tag `v0.1.0`, install Python directly
+reviews a private remote and creates local tag `v0.2.0`, install Python directly
 from its subdirectory:
 
 ```bash
 python -m pip install \
-  "triadcaptcha-django @ git+ssh://git@HOST/ORG/triadcaptcha.git@v0.1.0#subdirectory=packages/django"
+  "triadcaptcha-django @ git+ssh://git@HOST/ORG/triadcaptcha.git@v0.2.0#subdirectory=packages/django"
 ```
 
 Poetry dependency form:
 
 ```toml
 [tool.poetry.dependencies]
-triadcaptcha-django = { git = "ssh://git@HOST/ORG/triadcaptcha.git", tag = "v0.1.0", subdirectory = "packages/django" }
+triadcaptcha-django = { git = "ssh://git@HOST/ORG/triadcaptcha.git", tag = "v0.2.0", subdirectory = "packages/django" }
 ```
 
 Stock npm installs a Git package from the repository root and does not implement a
@@ -97,7 +97,7 @@ remote `#subdirectory` selector. Create the reviewed React subtree tag described
 [versioning](docs/versioning.md), then consume it:
 
 ```bash
-npm install "git+ssh://git@HOST/ORG/triadcaptcha.git#react-v0.1.0"
+npm install "git+ssh://git@HOST/ORG/triadcaptcha.git#react-v0.2.0"
 ```
 
 For a checked-out private repository, `npm install /path/to/triadcaptcha/packages/react`
@@ -131,6 +131,9 @@ TRIADCAPTCHA_SITE_KEY=tc_site_public_random_identifier
 TRIADCAPTCHA_HMAC_SECRET=at_least_32_random_bytes_and_never_frontend
 TRIADCAPTCHA_IDENTIFIER_HMAC_SECRET=a_different_32_byte_or_longer_secret
 TRIADCAPTCHA_REDIS_URL=redis://redis:6379/0
+TRIADCAPTCHA_REDIS_MAX_CONNECTIONS=32
+TRIADCAPTCHA_REDIS_POOL_TIMEOUT=0.25
+TRIADCAPTCHA_CONTEXT_COOKIE_SAMESITE=Lax
 TRIADCAPTCHA_TRUSTED_PROXY_NETWORKS=172.16.0.0/12
 TRIADCAPTCHA_DEVELOPMENT_MODE=0
 ```
@@ -145,6 +148,7 @@ Create database objects and initial action policies:
 python manage.py migrate
 python manage.py bootstrap_triadcaptcha --actions register login send_code password_reset comments
 python manage.py check --deploy
+python manage.py check_triadcaptcha_production
 ```
 
 Review each action in **Django admin → TriadCAPTCHA**. Sensitive actions should keep

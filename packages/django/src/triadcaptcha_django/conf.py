@@ -60,11 +60,14 @@ class TriadCaptchaSettings:
     redis_url: str
     redis_prefix: str
     redis_socket_timeout: float
+    redis_max_connections: int
+    redis_pool_timeout: float
     trusted_proxy_networks: tuple[str, ...]
     development_mode: bool
     context_cookie_name: str
     context_cookie_max_age: int
     context_cookie_secure: bool | None
+    context_cookie_samesite: str
     max_payload_bytes: int
     max_metadata_bytes: int
     audit_allow_sample_rate: float
@@ -90,6 +93,12 @@ def get_default_settings() -> TriadCaptchaSettings:
         redis_socket_timeout=max(
             0.05, _float(_setting("TRIADCAPTCHA_REDIS_SOCKET_TIMEOUT", 0.5), 0.5)
         ),
+        redis_max_connections=_int(
+            _setting("TRIADCAPTCHA_REDIS_MAX_CONNECTIONS", 32), 32
+        ),
+        redis_pool_timeout=_float(
+            _setting("TRIADCAPTCHA_REDIS_POOL_TIMEOUT", 0.25), 0.25
+        ),
         trusted_proxy_networks=_list(_setting("TRIADCAPTCHA_TRUSTED_PROXY_NETWORKS", ())),
         development_mode=_bool(_setting("TRIADCAPTCHA_DEVELOPMENT_MODE", False)),
         context_cookie_name=str(
@@ -99,6 +108,9 @@ def get_default_settings() -> TriadCaptchaSettings:
             300, _int(_setting("TRIADCAPTCHA_CONTEXT_COOKIE_MAX_AGE", 86400), 86400)
         ),
         context_cookie_secure=None if secure_cookie is None else _bool(secure_cookie),
+        context_cookie_samesite=str(
+            _setting("TRIADCAPTCHA_CONTEXT_COOKIE_SAMESITE", "Lax") or "Lax"
+        ).title(),
         max_payload_bytes=max(1024, _int(_setting("TRIADCAPTCHA_MAX_PAYLOAD_BYTES", 16384), 16384)),
         max_metadata_bytes=max(128, _int(_setting("TRIADCAPTCHA_MAX_METADATA_BYTES", 2048), 2048)),
         audit_allow_sample_rate=min(
@@ -117,11 +129,14 @@ def _pending_settings() -> TriadCaptchaSettings:
         redis_url="",
         redis_prefix=defaults.redis_prefix,
         redis_socket_timeout=defaults.redis_socket_timeout,
+        redis_max_connections=defaults.redis_max_connections,
+        redis_pool_timeout=defaults.redis_pool_timeout,
         trusted_proxy_networks=defaults.trusted_proxy_networks,
         development_mode=False,
         context_cookie_name=defaults.context_cookie_name,
         context_cookie_max_age=defaults.context_cookie_max_age,
         context_cookie_secure=defaults.context_cookie_secure,
+        context_cookie_samesite=defaults.context_cookie_samesite,
         max_payload_bytes=defaults.max_payload_bytes,
         max_metadata_bytes=defaults.max_metadata_bytes,
         audit_allow_sample_rate=defaults.audit_allow_sample_rate,

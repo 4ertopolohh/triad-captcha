@@ -13,6 +13,7 @@ import type {
 
 export const TRIADCAPTCHA_HEADERS = Object.freeze({
   action: 'X-TriadCAPTCHA-Action',
+  attempt: 'X-TriadCAPTCHA-Attempt',
   metadata: 'X-TriadCAPTCHA-Metadata',
   proof: 'X-TriadCAPTCHA-Payload',
   siteKey: 'X-TriadCAPTCHA-Site-Key',
@@ -23,9 +24,11 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_JSON_RESPONSE_LENGTH = 65_536;
 const MAX_PROOF_LENGTH = 32_768;
 const ACTION_PATTERN = /^[a-z][a-z0-9._:-]{0,63}$/u;
+const ATTEMPT_PATTERN = /^[A-Za-z0-9_-]{32,64}$/u;
 
 interface PublicErrorData {
   code: AntibotErrorCode;
+  attempt?: string;
   retryAfter?: number;
 }
 
@@ -105,6 +108,7 @@ function withProtectionHeaders(
   action: string,
   encodedMetadata: string | undefined,
   proof: string | undefined,
+  attempt: string | undefined,
 ): Request {
   const headers = new Headers(baseRequest.headers);
   headers.set(TRIADCAPTCHA_HEADERS.siteKey, options.siteKey);
@@ -119,6 +123,11 @@ function withProtectionHeaders(
   } else {
     // Never accept a caller-supplied proof: it may be stale or replayed.
     headers.delete(TRIADCAPTCHA_HEADERS.proof);
+  }
+  if (attempt) {
+    headers.set(TRIADCAPTCHA_HEADERS.attempt, attempt);
+  } else {
+    headers.delete(TRIADCAPTCHA_HEADERS.attempt);
   }
   return new Request(baseRequest.clone(), { headers });
 }
@@ -173,7 +182,15 @@ function parsePublicErrorPayload(payload: unknown): PublicErrorData | undefined 
     return undefined;
   }
   const retryAfter = parseRetryAfterValue(nested?.retry_after ?? payload.retry_after);
-  return retryAfter === undefined ? { code: codeValue } : { code: codeValue, retryAfter };
+  const attemptValue = nested?.attempt ?? payload.attempt;
+  const attempt = typeof attemptValue === 'string' && ATTEMPT_PATTERN.test(attemptValue)
+    ? attemptValue
+    : undefined;
+  return {
+    code: codeValue,
+    ...(retryAfter === undefined ? {} : { retryAfter }),
+    ...(attempt === undefined ? {} : { attempt }),
+  };
 }
 
 async function parsePublicError(response: Response): Promise<PublicErrorData | undefined> {
@@ -207,12 +224,17 @@ function extractChallenge(payload: unknown): Challenge {
   return candidate as unknown as Challenge;
 }
 
-function challengeRequestHeaders(options: NormalizedOptions, metadata: string | undefined): Headers {
+function challengeRequestHeaders(
+  options: NormalizedOptions,
+  metadata: string | undefined,
+  attempt: string,
+): Headers {
   const headers = new Headers(options.challengeHeaders);
   headers.set('Accept', 'application/json');
   headers.set(TRIADCAPTCHA_HEADERS.siteKey, options.siteKey);
   headers.delete(TRIADCAPTCHA_HEADERS.proof);
   headers.delete(TRIADCAPTCHA_HEADERS.action);
+  headers.set(TRIADCAPTCHA_HEADERS.attempt, attempt);
   if (metadata) {
     headers.set(TRIADCAPTCHA_HEADERS.metadata, metadata);
   } else {
@@ -225,6 +247,7 @@ async function fetchChallenge(
   options: NormalizedOptions,
   action: string,
   metadata: string | undefined,
+  attempt: string,
   signal: AbortSignal,
 ): Promise<Challenge> {
   const url = resolveTrustedUrl(options.challengeUrl, options.trustedOrigins);
@@ -241,7 +264,7 @@ async function fetchChallenge(
   const request = new Request(url, {
     cache: 'no-store',
     credentials: 'include',
-    headers: challengeRequestHeaders(options, metadata),
+    headers: challengeRequestHeaders(options, metadata, attempt),
     method: 'GET',
     redirect: 'error',
     signal: requestController.signal,
@@ -359,6 +382,7 @@ async function protectedFetchImpl(
     context.action,
     metadata,
     undefined,
+    undefined,
   );
   const initialResponse = await fetchWithStableError(options, initialRequest);
   if (initialResponse.ok) {
@@ -372,11 +396,15 @@ async function protectedFetchImpl(
   if (initialError.code !== 'ANTIBOT_CHALLENGE_REQUIRED') {
     throw toError(initialError, initialResponse.status);
   }
+  if (!initialError.attempt) {
+    throw new TriadCaptchaError('ANTIBOT_INVALID_PAYLOAD', { status: initialResponse.status });
+  }
 
   const challenge = await fetchChallenge(
     options,
     context.action,
     metadata,
+    initialError.attempt,
     baseRequest.signal,
   );
   const proof = await options.solver(challenge, {
@@ -400,6 +428,7 @@ async function protectedFetchImpl(
     context.action,
     metadata,
     proof,
+    initialError.attempt,
   );
   const retryResponse = await fetchWithStableError(options, retryRequest);
   if (retryResponse.ok) {

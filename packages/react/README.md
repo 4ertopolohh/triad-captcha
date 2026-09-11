@@ -15,7 +15,7 @@ The build tool needs Node.js `20.19+`. Runtime consumers do not need Node.js. Me
 From the React subtree tag described in the repository release guide:
 
 ```bash
-npm install "git+ssh://git@example.com/team/triadcaptcha.git#react-v0.1.0"
+npm install "git+ssh://git@example.com/team/triadcaptcha.git#react-v0.2.0"
 ```
 
 When a registry or workspace tool supports repository subdirectories, target `packages/react`. Do not put the server HMAC secret in npm configuration or frontend environment variables. `siteKey` is public.
@@ -56,7 +56,9 @@ try {
 }
 ```
 
-The original request is sent first. Only `ANTIBOT_CHALLENGE_REQUIRED` triggers a challenge fetch, background solve, and one retry. A second challenge response is never retried recursively.
+The original request is sent first. Only `ANTIBOT_CHALLENGE_REQUIRED` with a valid
+opaque `error.attempt` triggers a challenge fetch, background solve, and one retry.
+A second challenge response is never retried recursively.
 
 ## React hook
 
@@ -102,6 +104,7 @@ Challenge request:
 GET /api/triadcaptcha/challenge/?action=register
 X-TriadCAPTCHA-Site-Key: public-site-key
 X-TriadCAPTCHA-Metadata: base64url-json
+X-TriadCAPTCHA-Attempt: opaque-attempt-from-428
 ```
 
 Successful response (ALTCHA v2 camelCase fields):
@@ -124,8 +127,12 @@ Successful response (ALTCHA v2 camelCase fields):
 }
 ```
 
-The retry adds `X-TriadCAPTCHA-Payload`, a standard Base64-encoded UTF-8 JSON object containing `{challenge, solution}`. The Django endpoint must cryptographically verify the ALTCHA payload, validate action/session/expiry, and atomically consume its JTI in Redis before business logic.
+The retry adds the same `X-TriadCAPTCHA-Attempt` and
+`X-TriadCAPTCHA-Payload`, a standard Base64-encoded UTF-8 JSON object containing
+`{challenge, solution}`. The Django endpoint must cryptographically verify the
+ALTCHA payload, validate action/site/identity/session/expiry, and atomically consume
+its attempt and JTI in Redis before business logic.
 
 Public errors use either `{ "error": { "code": "...", "retry_after": 30 } }` or top-level `code`/`retry_after`. Status `428` is the recommended challenge-required response. The SDK exposes only stable public codes and never server-side risk reasons.
 
-Protected and challenge URLs are required to be same-origin unless their exact HTTP(S) origin is listed in `trustedOrigins`. Wildcards, credentials, paths, queries, and fragments are rejected in trusted-origin entries. Cross-origin challenge requests use credentialed Fetch, so the backend must grant credentialed CORS only to the intended frontend origin and allow the four `X-TriadCAPTCHA-*` headers. Redirect following is disabled so proof headers cannot cross an origin boundary; use canonical Django URLs (including their trailing slash). The wrapper preserves request bodies for exactly one retry and overrides caller-supplied TriadCAPTCHA headers to prevent accidental replay.
+Protected and challenge URLs are required to be same-origin unless their exact HTTP(S) origin is listed in `trustedOrigins`. Wildcards, credentials, paths, queries, and fragments are rejected in trusted-origin entries. Cross-origin challenge requests use credentialed Fetch, so the backend must grant credentialed CORS only to the intended frontend origin and allow the five `X-TriadCAPTCHA-*` headers. Redirect following is disabled so proof headers cannot cross an origin boundary; use canonical Django URLs (including their trailing slash). The wrapper preserves request bodies for exactly one retry and overrides caller-supplied TriadCAPTCHA headers to prevent accidental replay.

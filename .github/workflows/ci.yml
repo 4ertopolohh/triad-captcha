@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
     tags: ["v*", "react-v*"]
   pull_request:
   workflow_dispatch:
@@ -26,10 +26,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Python 3.13
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
           cache: pip
@@ -55,7 +55,7 @@ jobs:
     timeout-minutes: 15
     services:
       redis:
-        image: redis:7.4-alpine
+        image: redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
         ports:
           - 6379:6379
         options: >-
@@ -70,10 +70,10 @@ jobs:
       TRIADCAPTCHA_SITE_KEY: tc_ci_public_site_key
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Python 3.10
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.10"
           cache: pip
@@ -111,7 +111,7 @@ jobs:
             django_spec: "Django>=6.1,<6.2"
     services:
       redis:
-        image: redis:7.4-alpine
+        image: redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
         ports:
           - 6379:6379
         options: >-
@@ -126,10 +126,10 @@ jobs:
       TRIADCAPTCHA_SITE_KEY: tc_ci_public_site_key
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Python ${{ matrix.python }}
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python }}
           cache: pip
@@ -154,7 +154,7 @@ jobs:
     timeout-minutes: 15
     services:
       redis:
-        image: redis:7.4-alpine
+        image: redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
         ports:
           - 6379:6379
         options: >-
@@ -163,7 +163,7 @@ jobs:
           --health-timeout 3s
           --health-retries 10
       postgres:
-        image: postgres:17-alpine
+        image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
         env:
           POSTGRES_DB: triadcaptcha_test
           POSTGRES_USER: triadcaptcha
@@ -184,13 +184,14 @@ jobs:
       TRIADCAPTCHA_REDIS_PREFIX: triadcaptcha:ci:${{ github.run_id }}:${{ github.run_attempt }}
       TRIADCAPTCHA_REDIS_URL: redis://127.0.0.1:6379/15
       TRIADCAPTCHA_TEST_POSTGRES: "1"
+      TRIADCAPTCHA_TEST_REAL_POSTGRES: "1"
       TRIADCAPTCHA_TEST_REAL_REDIS: "1"
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Python 3.13
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
           cache: pip
@@ -205,6 +206,12 @@ jobs:
         working-directory: packages/django
         run: python -m pytest tests
 
+      - name: Verify Redis AOF recovery semantics
+        env:
+          PYTHONPATH: packages/django/src
+          TRIADCAPTCHA_TEST_REDIS_AOF_IMAGE: redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+        run: python scripts/test_redis_aof_recovery.py
+
   python-package:
     name: Build Python distributions
     needs: [python-quality, python-legacy, python-production, python-integration]
@@ -212,10 +219,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Python 3.13
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
           cache: pip
@@ -264,7 +271,7 @@ jobs:
           python -c "import triadcaptcha_django; print(triadcaptcha_django.__version__)"
 
       - name: Upload Python distributions
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: triadcaptcha-django-dist
           path: packages/django/dist/*
@@ -281,10 +288,10 @@ jobs:
         react: ["18", "19"]
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Node.js 20
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "20.19"
           cache: npm
@@ -322,10 +329,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Node.js 20
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "20.19"
           cache: npm
@@ -354,7 +361,7 @@ jobs:
           throw new Error('Missing packed proof-of-work worker asset'); }"
 
       - name: Upload npm package
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: triadcaptcha-react-package
           path: packages/react/*.tgz
@@ -367,7 +374,7 @@ jobs:
     timeout-minutes: 20
     services:
       redis:
-        image: redis:7.4-alpine
+        image: redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
         ports:
           - 6379:6379
         options: >-
@@ -388,21 +395,21 @@ jobs:
       VITE_TRIADCAPTCHA_SITE_KEY: tc_ci_demo_public_site_key
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Python 3.13
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: |
             packages/django/pyproject.toml
-            examples/django-react-demo/backend/requirements.txt
+            examples/django-react-demo/backend/requirements.lock
 
       - name: Install Django package and demo requirements
-        run: >-
-          python -m pip install -e "./packages/django"
-          -r examples/django-react-demo/backend/requirements.txt
+        run: |
+          python -m pip install --require-hashes -r examples/django-react-demo/backend/requirements.lock
+          python -m pip install --no-deps -e "./packages/django"
 
       - name: Check demo Django configuration
         run: python examples/django-react-demo/backend/manage.py check
@@ -415,11 +422,14 @@ jobs:
       - name: Apply demo migrations to SQLite
         run: python examples/django-react-demo/backend/manage.py migrate --noinput
 
+      - name: Enforce TriadCAPTCHA production prerequisites
+        run: python examples/django-react-demo/backend/manage.py check_triadcaptcha_production
+
       - name: Exercise protected demo request and replay flow
         run: python examples/django-react-demo/backend/manage.py test demo_api --verbosity 2
 
       - name: Set up Node.js 20
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "20.19"
           cache: npm
@@ -453,10 +463,107 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Render Compose configuration
         run: docker compose --env-file .env.example -f infra/docker-compose.yml config --quiet
 
       - name: Build demo backend and Nginx/frontend images
         run: docker compose --env-file .env.example -f infra/docker-compose.yml build
+
+      - name: Start and smoke-test the reference stack
+        env:
+          DATABASE_URL: postgresql://triadcaptcha:ci_database_password@postgres:5432/triadcaptcha_demo
+          DJANGO_SECRET_KEY: ci_demo_django_secret_key_at_least_32_bytes
+          POSTGRES_PASSWORD: ci_database_password
+          TRIADCAPTCHA_HMAC_SECRET: ci_demo_hmac_secret_at_least_32_bytes
+          TRIADCAPTCHA_IDENTIFIER_HMAC_SECRET: ci_demo_identifier_secret_at_least_32_bytes
+          TRIADCAPTCHA_SITE_KEY: tc_ci_demo_public_site_key
+        run: |
+          docker compose --env-file .env.example -f infra/docker-compose.yml up --detach --wait
+          curl --fail --silent --show-error http://127.0.0.1:8080/api/health/
+          curl --fail --silent --show-error http://127.0.0.1:8080/ >/dev/null
+          headers="$(curl --silent --show-error --head http://127.0.0.1:8080/)"
+          grep -Fiq "Content-Security-Policy:" <<<"$headers"
+          grep -Fiq "X-Content-Type-Options: nosniff" <<<"$headers"
+          if grep -Fiq "Strict-Transport-Security:" <<<"$headers"; then exit 1; fi
+
+      - name: Stop the reference stack
+        if: ${{ always() }}
+        env:
+          DATABASE_URL: postgresql://triadcaptcha:ci_database_password@postgres:5432/triadcaptcha_demo
+          DJANGO_SECRET_KEY: ci_demo_django_secret_key_at_least_32_bytes
+          POSTGRES_PASSWORD: ci_database_password
+          TRIADCAPTCHA_HMAC_SECRET: ci_demo_hmac_secret_at_least_32_bytes
+          TRIADCAPTCHA_IDENTIFIER_HMAC_SECRET: ci_demo_identifier_secret_at_least_32_bytes
+          TRIADCAPTCHA_SITE_KEY: tc_ci_demo_public_site_key
+        run: docker compose --env-file .env.example -f infra/docker-compose.yml down --volumes
+
+      - name: Scan demo backend image
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: triadcaptcha-backend
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Scan demo Nginx image
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: triadcaptcha-nginx
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  dependency-audit:
+    name: Locked dependency security audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+
+      - name: Audit locked Python dependencies
+        run: |
+          python -m pip install "pip-audit==2.10.1"
+          python -m pip_audit --require-hashes -r examples/django-react-demo/backend/requirements.lock
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "20.19"
+
+      - name: Audit locked Node dependencies
+        run: |
+          npm audit --audit-level=high --package-lock-only --prefix packages/react
+          npm audit --audit-level=high --package-lock-only --prefix examples/django-react-demo/frontend
+
+  ci-required:
+    name: Required CI
+    if: ${{ always() }}
+    needs:
+      - python-quality
+      - python-legacy
+      - python-production
+      - python-integration
+      - python-package
+      - react-check
+      - react-package
+      - demo-smoke
+      - compose-config
+      - dependency-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every CI job to succeed
+        env:
+          JOB_RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $JOB_RESULTS; do
+            test "$result" = success || exit 1
+          done

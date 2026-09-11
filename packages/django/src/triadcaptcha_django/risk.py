@@ -105,6 +105,45 @@ def _effective_manual_rules(policy: ProtectedAction, signals: RequestSignals):
     )
 
 
+def check_authoritative_blocks(
+    policy: ProtectedAction, signals: RequestSignals
+) -> RiskAssessment:
+    """Recheck block state without observing another business attempt."""
+
+    reasons: list[str] = []
+    categories: set[str] = set()
+    retry_after = 0
+    hard_block = False
+    for scope, value_hash in (
+        (BlockRule.Scope.IP_IDENTITY, signals.ip_identity_hash),
+        (BlockRule.Scope.SESSION, signals.session_hash),
+        (BlockRule.Scope.IDENTITY, signals.identity_hash),
+        (BlockRule.Scope.IP, signals.ip_hash),
+    ):
+        ttl = temporary_block_ttl(scope, value_hash, policy.action)
+        if ttl:
+            retry_after = max(retry_after, ttl)
+            reasons.append(f"temporary_block_{scope}")
+            categories.add("ip" if scope == BlockRule.Scope.IP else "temporary_block")
+            if scope != BlockRule.Scope.IP:
+                hard_block = True
+
+    for rule in _effective_manual_rules(policy, signals):
+        reasons.append(f"block_rule_{rule.scope}")
+        categories.add("ip" if rule.scope == BlockRule.Scope.IP else "manual")
+        if rule.scope != BlockRule.Scope.IP:
+            hard_block = True
+
+    return RiskAssessment(
+        score=0,
+        reasons=tuple(reasons),
+        categories=frozenset(categories),
+        should_block=hard_block,
+        existing_block=hard_block,
+        retry_after=retry_after or None,
+    )
+
+
 def assess_risk(
     policy: ProtectedAction,
     signals: RequestSignals,

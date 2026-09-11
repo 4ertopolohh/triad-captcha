@@ -1,0 +1,37 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+  - package-ecosystem: docker
+    directory: /infra
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+  - package-ecosystem: docker
+    directory: /infra/nginx
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+  - package-ecosystem: docker
+    directory: /examples/django-react-demo/backend
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directory: /packages/react
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directory: /examples/django-react-demo/frontend
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+  - package-ecosystem: pip
+    directory: /examples/django-react-demo/backend
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5

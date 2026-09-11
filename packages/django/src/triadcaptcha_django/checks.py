@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 
+import django
 from django.conf import settings as django_settings
 from django.core.checks import Error, Tags, Warning, register
 
@@ -68,6 +69,20 @@ def triadcaptcha_configuration_check(app_configs, **kwargs):
                 id="triadcaptcha.E005",
             )
         )
+    if not 1 <= config.redis_max_connections <= 1024:
+        messages.append(
+            Error(
+                "TRIADCAPTCHA_REDIS_MAX_CONNECTIONS must be between 1 and 1024.",
+                id="triadcaptcha.E008",
+            )
+        )
+    if not 0.01 <= config.redis_pool_timeout <= 30:
+        messages.append(
+            Error(
+                "TRIADCAPTCHA_REDIS_POOL_TIMEOUT must be between 0.01 and 30 seconds.",
+                id="triadcaptcha.E009",
+            )
+        )
 
     for network in config.trusted_proxy_networks:
         try:
@@ -93,6 +108,31 @@ def triadcaptcha_configuration_check(app_configs, **kwargs):
                 "TriadCAPTCHA development mode is enabled.",
                 hint="Disable it before deploying.",
                 id="triadcaptcha.W001",
+            )
+        )
+    if config.context_cookie_samesite not in {"Strict", "Lax", "None"}:
+        messages.append(
+            Error(
+                "TRIADCAPTCHA_CONTEXT_COOKIE_SAMESITE must be Strict, Lax, or None.",
+                id="triadcaptcha.E010",
+            )
+        )
+    if (
+        config.context_cookie_samesite == "None"
+        and config.context_cookie_secure is not True
+    ):
+        messages.append(
+            Error(
+                "SameSite=None requires TRIADCAPTCHA_CONTEXT_COOKIE_SECURE=true.",
+                id="triadcaptcha.E011",
+            )
+        )
+    if not django_settings.DEBUG and django.VERSION[:2] < (5, 2):
+        messages.append(
+            Warning(
+                "This Django release is no longer supported for production use.",
+                hint="Use Django 5.2 or newer; 4.2 is retained only for legacy compatibility.",
+                id="triadcaptcha.W003",
             )
         )
     return messages

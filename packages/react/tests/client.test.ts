@@ -94,7 +94,12 @@ describe('protected fetch', () => {
       }
       protectedCalls += 1;
       return protectedCalls === 1
-        ? jsonResponse({ error: { code: 'ANTIBOT_CHALLENGE_REQUIRED' } }, 428)
+        ? jsonResponse({
+            error: {
+              code: 'ANTIBOT_CHALLENGE_REQUIRED',
+              attempt: 'attempt_token_0123456789abcdef012345',
+            },
+          }, 428)
         : jsonResponse({ created: true }, 201);
     }) as typeof fetch;
     const solver = vi.fn(async () => 'cHJvb2Y=');
@@ -112,6 +117,7 @@ describe('protected fetch', () => {
           'Content-Type': 'application/json',
           'X-CSRFToken': 'csrf-token',
           [TRIADCAPTCHA_HEADERS.proof]: 'stale-proof',
+          [TRIADCAPTCHA_HEADERS.attempt]: 'caller-attempt-must-not-survive',
         },
         method: 'POST',
       },
@@ -128,7 +134,14 @@ describe('protected fetch', () => {
     expect(challengeRequest!.redirect).toBe('error');
     expect(retry!.redirect).toBe('error');
     expect(initial!.headers.has(TRIADCAPTCHA_HEADERS.proof)).toBe(false);
+    expect(initial!.headers.has(TRIADCAPTCHA_HEADERS.attempt)).toBe(false);
+    expect(challengeRequest!.headers.get(TRIADCAPTCHA_HEADERS.attempt)).toBe(
+      'attempt_token_0123456789abcdef012345',
+    );
     expect(retry!.headers.get(TRIADCAPTCHA_HEADERS.proof)).toBe('cHJvb2Y=');
+    expect(retry!.headers.get(TRIADCAPTCHA_HEADERS.attempt)).toBe(
+      'attempt_token_0123456789abcdef012345',
+    );
     expect(retry!.headers.get('X-CSRFToken')).toBe('csrf-token');
     await expect(initial!.clone().text()).resolves.toBe(
       JSON.stringify({ email: 'person@example.test' }),
@@ -143,7 +156,10 @@ describe('protected fetch', () => {
       const request = input as Request;
       return new URL(request.url).pathname === '/api/triadcaptcha/challenge/'
         ? jsonResponse(challenge)
-        : jsonResponse({ code: 'ANTIBOT_CHALLENGE_REQUIRED' }, 428);
+        : jsonResponse({
+            code: 'ANTIBOT_CHALLENGE_REQUIRED',
+            attempt: 'attempt_token_0123456789abcdef012345',
+          }, 428);
     }) as typeof fetch;
     const client = createTriadCaptchaClient({
       fetch: fetchMock,
@@ -251,7 +267,12 @@ describe('protected fetch', () => {
       }
       protectedCalls += 1;
       return protectedCalls === 1
-        ? jsonResponse({ error: { code: 'ANTIBOT_CHALLENGE_REQUIRED' } }, 428)
+        ? jsonResponse({
+            error: {
+              code: 'ANTIBOT_CHALLENGE_REQUIRED',
+              attempt: 'attempt_token_0123456789abcdef012345',
+            },
+          }, 428)
         : jsonResponse({ ok: true });
     }) as typeof fetch;
     const protectedFetch = createProtectedFetch({
@@ -289,7 +310,10 @@ describe('protected fetch', () => {
     const fetchMock = vi.fn(async () => {
       call += 1;
       return call === 1
-        ? jsonResponse({ code: 'ANTIBOT_CHALLENGE_REQUIRED' }, 428)
+        ? jsonResponse({
+            code: 'ANTIBOT_CHALLENGE_REQUIRED',
+            attempt: 'attempt_token_0123456789abcdef012345',
+          }, 428)
         : new Response('', { status: 503 });
     }) as typeof fetch;
     const protectedFetch = createProtectedFetch({ fetch: fetchMock, siteKey: 'site_public' });

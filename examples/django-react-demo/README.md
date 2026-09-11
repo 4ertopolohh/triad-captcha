@@ -19,6 +19,8 @@ docker compose --env-file .env -f infra/docker-compose.yml up --build
 
 Open <http://localhost:8080>. The login form accepts `demo-password`; other values
 record a password failure so repeated-failure risk can be observed.
+The published port is bound to `127.0.0.1` by default. Use an SSH tunnel for a
+remote demo; do not widen it to every interface.
 
 The example deliberately uses `DJANGO_SECURE_COOKIES=0` on localhost HTTP. Set it
 to `1` when the deployment is served through HTTPS; otherwise browsers will not
@@ -46,8 +48,8 @@ instances), then:
 
 ```bash
 python -m venv .venv
-.venv/bin/python -m pip install -e "packages/django[test]"
-.venv/bin/python -m pip install -r examples/django-react-demo/backend/requirements.txt
+.venv/bin/python -m pip install --require-hashes -r examples/django-react-demo/backend/requirements.lock
+.venv/bin/python -m pip install --no-deps -e packages/django
 python examples/django-react-demo/backend/manage.py migrate
 python examples/django-react-demo/backend/manage.py bootstrap_triadcaptcha \
   --actions register login lead

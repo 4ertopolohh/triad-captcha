@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import threading
 from datetime import timedelta
 from io import StringIO
 
@@ -10,9 +12,12 @@ from django.contrib.auth.models import Permission
 from django.core import checks
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
+from django.core.management.base import CommandError
+from django.db import IntegrityError, close_old_connections, connection, transaction
 from django.test import RequestFactory, override_settings
 from django.utils import timezone
 
+from triadcaptcha_django import redis_backend
 from triadcaptcha_django.admin import BlockRuleAdminForm, _admin_value_hash
 from triadcaptcha_django.conf import ConfigurationPending, get_settings, get_settings_state
 from triadcaptcha_django.models import (
@@ -148,6 +153,39 @@ def test_pending_runtime_settings_fail_closed_without_blocking_checks(settings):
     assert {message.id for message in messages} == {"triadcaptcha.W002"}
 
 
+@override_settings(
+    TRIADCAPTCHA_REDIS_MAX_CONNECTIONS=0,
+    TRIADCAPTCHA_REDIS_POOL_TIMEOUT=0,
+)
+def test_invalid_redis_pool_limits_are_rejected_by_system_checks():
+    message_ids = {message.id for message in checks.run_checks(tags=[checks.Tags.security])}
+    assert {"triadcaptcha.E008", "triadcaptcha.E009"} <= message_ids
+
+
+@override_settings(
+    TRIADCAPTCHA_CONTEXT_COOKIE_SAMESITE="None",
+    TRIADCAPTCHA_CONTEXT_COOKIE_SECURE=False,
+)
+def test_cross_site_context_cookie_requires_secure_transport():
+    message_ids = {message.id for message in checks.run_checks(tags=[checks.Tags.security])}
+    assert "triadcaptcha.E011" in message_ids
+
+
+def test_redis_client_uses_bounded_pool_and_disconnects_on_cache_clear(monkeypatch):
+    redis_backend.clear_client_cache()
+    client = redis_backend._client_for("redis://127.0.0.1:6379/15", 0.5, 2, 0.1)
+    pool = client.connection_pool
+    disconnected = []
+    monkeypatch.setattr(pool, "disconnect", lambda: disconnected.append(True))
+
+    assert isinstance(pool, redis_backend.redis.BlockingConnectionPool)
+    assert pool.max_connections == 2
+    assert pool.timeout == 0.1
+
+    redis_backend.clear_client_cache()
+    assert disconnected == [True]
+
+
 def test_bootstrap_is_idempotent_and_does_not_undo_rotation(settings):
     stdout = StringIO()
     call_command("bootstrap_triadcaptcha", "--actions", "register", "login", stdout=stdout)
@@ -165,6 +203,52 @@ def test_bootstrap_is_idempotent_and_does_not_undo_rotation(settings):
     rotated.refresh_from_db()
     assert env_key.status == SiteKeyVersion.Status.GRACE
     assert rotated.status == SiteKeyVersion.Status.ACTIVE
+
+
+def test_database_rejects_a_second_active_site_key(policy):
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            SiteKeyVersion.objects.create(site_key=SiteKeyVersion.generate_key())
+
+
+@pytest.mark.skipif(
+    os.environ.get("TRIADCAPTCHA_TEST_REAL_POSTGRES") != "1",
+    reason="requires a real PostgreSQL service",
+)
+@pytest.mark.django_db(transaction=True)
+def test_concurrent_site_key_rotations_leave_exactly_one_active(policy):
+    assert connection.vendor == "postgresql"
+    barrier = threading.Barrier(2)
+    results = []
+    failures = []
+    result_lock = threading.Lock()
+
+    def rotate():
+        close_old_connections()
+        try:
+            barrier.wait()
+            rotated = SiteKeyVersion.rotate(grace_period=timedelta(days=7))
+            with result_lock:
+                results.append(rotated.pk)
+        except Exception as exc:  # pragma: no cover - reported below with context
+            with result_lock:
+                failures.append(exc)
+        finally:
+            close_old_connections()
+
+    threads = [threading.Thread(target=rotate) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not failures
+    assert len(results) == 2
+    assert SiteKeyVersion.objects.filter(status=SiteKeyVersion.Status.ACTIVE).count() == 1
+    assert SiteKeyVersion.objects.filter(status=SiteKeyVersion.Status.GRACE).count() == 2
+    assert current_site_key() == SiteKeyVersion.objects.get(
+        status=SiteKeyVersion.Status.ACTIVE
+    ).site_key
 
 
 def test_revoked_database_key_does_not_fall_back_to_environment(settings):
@@ -211,3 +295,67 @@ def test_cleanup_removes_only_stale_inactive_block_rules(policy):
     assert not BlockRule.objects.filter(pk=stale.pk).exists()
     assert BlockRule.objects.filter(pk=current.pk).exists()
     assert BlockRule.objects.filter(pk=permanent.pk, active=True).exists()
+
+
+def test_cleanup_mutations_are_batched_and_keep_current_events(policy):
+    stale = [
+        SecurityEvent(action="register", decision=SecurityEvent.Decision.ALLOW)
+        for _ in range(1201)
+    ]
+    SecurityEvent.objects.bulk_create(stale)
+    cutoff_time = timezone.now() - timedelta(days=100)
+    SecurityEvent.objects.filter(pk__in=[event.pk for event in stale]).update(
+        created_at=cutoff_time
+    )
+    current = SecurityEvent.objects.create(
+        action="register", decision=SecurityEvent.Decision.ALLOW
+    )
+    mutation_sizes = []
+
+    def capture_mutations(execute, sql, params, many, context):
+        if (
+            sql.lstrip().upper().startswith("DELETE")
+            and "triadcaptcha_django_securityevent" in sql
+        ):
+            mutation_sizes.append(len(params or ()))
+        return execute(sql, params, many, context)
+
+    with connection.execute_wrapper(capture_mutations):
+        call_command("cleanup_triadcaptcha", "--days", "90", "--batch-size", "500")
+
+    assert mutation_sizes == [500, 500, 201]
+    assert SecurityEvent.objects.filter(pk=current.pk).exists()
+    assert not SecurityEvent.objects.filter(pk__in=[event.pk for event in stale]).exists()
+
+
+@pytest.mark.parametrize("batch_size", [0, 10001])
+def test_cleanup_rejects_invalid_batch_size(policy, batch_size):
+    with pytest.raises(CommandError, match="Batch size"):
+        call_command("cleanup_triadcaptcha", "--batch-size", str(batch_size))
+
+
+def test_cleanup_dry_run_does_not_mutate(policy):
+    event = SecurityEvent.objects.create(action="register", decision="allow")
+    SecurityEvent.objects.filter(pk=event.pk).update(
+        created_at=timezone.now() - timedelta(days=100)
+    )
+    call_command("cleanup_triadcaptcha", "--days", "90", "--batch-size", "1", "--dry-run")
+    assert SecurityEvent.objects.filter(pk=event.pk).exists()
+
+
+def test_production_preflight_rejects_unapproved_fail_open_policy(policy):
+    policy.fail_closed = False
+    policy.save(update_fields=("fail_closed",))
+
+    with pytest.raises(CommandError, match="fail-open"):
+        call_command("check_triadcaptcha_production")
+
+    call_command("check_triadcaptcha_production", "--allow-fail-open", "register")
+
+
+def test_production_preflight_rejects_unsupported_django(policy, monkeypatch):
+    import triadcaptcha_django.management.commands.check_triadcaptcha_production as command
+
+    monkeypatch.setattr(command.django, "VERSION", (4, 2, 30, "final", 0))
+    with pytest.raises(CommandError, match="Django 5.2"):
+        call_command("check_triadcaptcha_production")

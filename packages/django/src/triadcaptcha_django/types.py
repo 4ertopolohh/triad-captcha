@@ -51,10 +51,12 @@ def allow(*, risk_score: int = 0, reasons: tuple[str, ...] = ()) -> EvaluationRe
     return EvaluationResult(Decision.ALLOW, risk_score=risk_score, reasons=reasons)
 
 
-def challenge_required(*, risk_score: int = 0, reasons: tuple[str, ...] = ()) -> EvaluationResult:
+def challenge_required(
+    *, attempt: str, risk_score: int = 0, reasons: tuple[str, ...] = ()
+) -> EvaluationResult:
     return EvaluationResult(
         Decision.CHALLENGE_REQUIRED,
-        PublicError(ErrorCode.CHALLENGE_REQUIRED),
+        PublicError(ErrorCode.CHALLENGE_REQUIRED, attempt=attempt),
         risk_score=risk_score,
         reasons=reasons,
     )

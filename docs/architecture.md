@@ -20,6 +20,13 @@ API dependency. Reputation and audit history are local to one installation.
    one from an explicitly configured exact trusted API origin),
    solves it in a Web Worker, and retries the request exactly once.
 
+The 428 response also creates an opaque short-lived Redis attempt. Challenge
+issuance transitions it from pending to issued and binds it to action, accepted
+site-key marker, identity HMAC, context HMAC, and challenge identifier. A valid
+retry atomically consumes both attempt and challenge and writes replay tombstones.
+Malformed proofs use a separate saturating attempt-local counter; they never
+increment the originating business-attempt counters.
+
 ## Request flow
 
 ```text
@@ -94,7 +101,9 @@ Redis is a security dependency rather than a cache. If it is unavailable:
 - a project may explicitly configure a low-impact action to fail open, but the
   shipped dangerous actions cannot silently inherit that choice.
 
-PostgreSQL failure follows normal Django/database failure handling. Nginx limiting
+PostgreSQL failure follows normal Django/database failure handling. Redis clients
+use a bounded per-process blocking connection pool; exhaustion and connection/read
+timeouts fail closed for enforcement. Nginx limiting
 continues to provide only the perimeter ceiling.
 
 ## Trust boundaries
